@@ -1,0 +1,45 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+ENV/
+
+# PyInstaller / build output
+build/
+dist/
+build-windows/
+dist-windows/
+
+# Application-local data from older/dev versions
+data/
+library.db
+config.json
+
+# Logs / temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE / editor files
+.idea/
+.vscode/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Coverage / tooling
+.coverage
+htmlcov/

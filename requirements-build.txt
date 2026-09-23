@@ -1,0 +1,7 @@
+streamlit==1.64.0
+pandas==3.0.6
+altair==6.3.0
+requests==2.34.2
+pyarrow==25.0.1
+psutil==7.2.2
+pyinstaller==6.22.3
