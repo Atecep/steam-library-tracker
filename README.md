@@ -70,11 +70,9 @@ You will need:
 - a Steam Web API key
 - your SteamID64
 
-Your configuration and library data are stored locally on your computer.
-
 ## Local data
 
-Steam Library Tracker stores user data outside the application folder so that updates do not overwrite your settings, statuses or notes.
+Steam Library Tracker stores user data outside the application folder so updates do not overwrite your settings, statuses or notes.
 
 ### Linux
 
@@ -88,75 +86,28 @@ Steam Library Tracker stores user data outside the application folder so that up
 %LOCALAPPDATA%\SteamLibraryTracker\
 ```
 
-The folder contains files such as:
+This folder contains files such as:
 
 ```text
 config.json
 library.db
 ```
 
-## Running from source
+## Updates
 
-Clone the repository and create a virtual environment.
+Steam Library Tracker can check GitHub Releases for newer versions.
 
-Install the build/runtime dependencies:
-
-```bash
-python -m pip install -r requirements-build.txt
-```
-
-Run the application with:
-
-```bash
-python launcher.py
-```
-
-Do **not** run `launcher.py` with `streamlit run`.
-
-## Building
-
-### Linux
-
-```bash
-./build_linux.sh
-```
-
-The standalone application is created under:
-
-```text
-dist/SteamLibraryTracker/
-```
-
-### Windows
-
-From PowerShell:
-
-```powershell
-.\build_windows.ps1
-```
-
-The standalone application is created under:
-
-```text
-dist-windows\SteamLibraryTracker\
-```
-
-## Versioning
-
-Steam Library Tracker follows semantic versioning:
-
-```text
-1.0.0  Initial release
-1.0.1  Bug fix
-1.1.0  New backwards-compatible features
-2.0.0  Major or incompatible changes
-```
-
-The application can check GitHub Releases for newer versions.
+When a newer version is available, the app displays an update notification with a link to the corresponding release.
 
 ## Privacy
 
-Steam Library Tracker is a local desktop application. Personal notes, statuses, configuration and cached library data remain on your computer unless you explicitly export or share them.
+Steam Library Tracker is a local desktop application.
+
+Personal notes, statuses, configuration and cached library data remain on your computer unless you explicitly export or share them.
+
+## Development
+
+For instructions on running or building Steam Library Tracker from source, see [BUILDING.md](BUILDING.md).
 
 ## Disclaimer
 
