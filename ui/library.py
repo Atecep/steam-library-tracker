@@ -2,6 +2,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from database import get_metadata_unavailable_appids
 from constants import (
     GAMES_PER_ROW,
     PAGE_SIZE,
@@ -69,6 +70,60 @@ def _selected_statuses_from_chart_state(chart_state):
 def _refresh_library_status_chart():
     """Force the chart to reflect the current status filter."""
     st.session_state.library_status_chart_version += 1
+
+
+def _set_metadata_only_view(enabled):
+    """Toggle the technical metadata-only library view."""
+    st.session_state.library_metadata_only = bool(enabled)
+    st.session_state.gallery_page = 1
+
+
+def _render_gallery_pagination(
+    total_results,
+    current_page,
+    total_pages,
+    position
+):
+    """Render compact pagination controls at the top or bottom."""
+
+    results_col, prev_col, page_col, next_col = st.columns(
+        [7.2, 0.55, 0.75, 0.55],
+        vertical_alignment="center",
+        gap="small"
+    )
+
+    with results_col:
+        st.markdown(
+            f"**{total_results} games found**"
+        )
+
+    with prev_col:
+        if st.button(
+            "←",
+            width="stretch",
+            disabled=current_page <= 1,
+            key=f"gallery_previous_page_{position}"
+        ):
+            st.session_state.gallery_page -= 1
+            st.rerun()
+
+    with page_col:
+        st.markdown(
+            f"<div style='text-align:center; font-weight:600;'>"
+            f"{current_page} / {total_pages}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    with next_col:
+        if st.button(
+            "→",
+            width="stretch",
+            disabled=current_page >= total_pages,
+            key=f"gallery_next_page_{position}"
+        ):
+            st.session_state.gallery_page += 1
+            st.rerun()
 
 
 def render_library_overview(
@@ -343,6 +398,29 @@ def render_library(df):
     # LIBRARY TOOLBAR
     # =====================================================
 
+    metadata_unavailable_appids = set(
+        get_metadata_unavailable_appids()
+    )
+
+    metadata_unavailable_count = int(
+        df["AppID"].isin(
+            metadata_unavailable_appids
+        ).sum()
+    )
+
+    if "library_metadata_only" not in st.session_state:
+        st.session_state.library_metadata_only = False
+
+    if (
+        st.session_state.library_metadata_only
+        and metadata_unavailable_count == 0
+    ):
+        st.session_state.library_metadata_only = False
+
+    metadata_only = bool(
+        st.session_state.library_metadata_only
+    )
+
     search_col, status_col, sort_col, order_col = st.columns(
         [2.4, 1.6, 1, 1]
     )
@@ -438,6 +516,17 @@ def render_library(df):
             )
         ]
 
+    # -----------------------------------------------------
+    # Metadata unavailable
+    # -----------------------------------------------------
+
+    if metadata_only:
+        filtered_df = filtered_df[
+            filtered_df["AppID"].isin(
+                metadata_unavailable_appids
+            )
+        ]
+
     # =====================================================
     # SORTING
     # =====================================================
@@ -504,6 +593,7 @@ def render_library(df):
     filter_signature = (
         search_term,
         tuple(status_filters),
+        metadata_only,
         sort_by,
         order
     )
@@ -538,7 +628,21 @@ def render_library(df):
             "**0 games found**"
         )
 
-        if search_term and status_filters:
+        if metadata_only:
+
+            st.info(
+                "🎮 No games without metadata match the current filters."
+            )
+
+            st.button(
+                "Show all games",
+                type="tertiary",
+                key="show_all_games_empty",
+                on_click=_set_metadata_only_view,
+                args=(False,)
+            )
+
+        elif search_term and status_filters:
 
             st.info(
                 "🔎 No games match your search and the selected "
@@ -588,53 +692,15 @@ def render_library(df):
     )
 
     # -------------------------------------------------
-    # Results + compact navigation
+    # Results + compact navigation (top)
     # -------------------------------------------------
 
-    results_col, prev_col, page_col, next_col = st.columns(
-        [7.2, 0.55, 0.75, 0.55],
-        vertical_alignment="center",
-        gap="small"
+    _render_gallery_pagination(
+        total_results=total_results,
+        current_page=current_page,
+        total_pages=total_pages,
+        position="top"
     )
-
-    with results_col:
-
-        st.markdown(
-            f"**{total_results} games found**"
-        )
-
-    with prev_col:
-
-        if st.button(
-            "←",
-            width="stretch",
-            disabled=current_page <= 1,
-            key="gallery_previous_page"
-        ):
-
-            st.session_state.gallery_page -= 1
-            st.rerun()
-
-    with page_col:
-
-        st.markdown(
-            f"<div style='text-align:center; font-weight:600;'>"
-            f"{current_page} / {total_pages}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-    with next_col:
-
-        if st.button(
-            "→",
-            width="stretch",
-            disabled=current_page >= total_pages,
-            key="gallery_next_page"
-        ):
-
-            st.session_state.gallery_page += 1
-            st.rerun()
 
     # -------------------------------------------------
     # Games on this page
@@ -808,3 +874,38 @@ def render_library(df):
                     )
                 )
 
+    # -------------------------------------------------
+    # Compact navigation (bottom)
+    # -------------------------------------------------
+
+    _render_gallery_pagination(
+        total_results=total_results,
+        current_page=current_page,
+        total_pages=total_pages,
+        position="bottom"
+    )
+
+    # -------------------------------------------------
+    # Discreet metadata-unavailable view
+    # -------------------------------------------------
+
+    if metadata_unavailable_count > 0:
+        if metadata_only:
+            st.caption(
+                f"Showing {metadata_unavailable_count} games without metadata."
+            )
+            st.button(
+                "Show all games",
+                type="tertiary",
+                key="show_all_games_footer",
+                on_click=_set_metadata_only_view,
+                args=(False,)
+            )
+        else:
+            st.button(
+                f"Games without metadata ({metadata_unavailable_count})",
+                type="tertiary",
+                key="show_games_without_metadata_footer",
+                on_click=_set_metadata_only_view,
+                args=(True,)
+            )

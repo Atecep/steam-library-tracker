@@ -13,7 +13,7 @@ if ! python -c "import PyInstaller" >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! python -c "import streamlit, pandas, altair, requests, pyarrow, psutil" >/dev/null 2>&1; then
+if ! python -c "import streamlit, pandas, altair, requests, pyarrow, psutil, webview, PySide6" >/dev/null 2>&1; then
     echo
     echo "One or more application dependencies are missing from the active environment."
     echo "Install them with:"
@@ -24,6 +24,7 @@ fi
 echo "Python:      $(python --version 2>&1)"
 echo "PyInstaller: $(python -c 'import PyInstaller; print(PyInstaller.__version__)')"
 echo "Streamlit:   $(python -c 'import streamlit; print(streamlit.__version__)')"
+echo "pywebview:   $(python -c 'import importlib.metadata; print(importlib.metadata.version("pywebview"))')"
 echo
 
 rm -rf build dist

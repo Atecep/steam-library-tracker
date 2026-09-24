@@ -14,6 +14,16 @@ HEADERS = {
 }
 
 
+class SteamStoreMetadataUnavailable(Exception):
+    """Steam returned a valid appdetails response with success=false."""
+
+    def __init__(self, appid):
+        super().__init__(
+            f"Steam Store metadata is unavailable for AppID {int(appid)}"
+        )
+        self.appid = int(appid)
+
+
 def get_store_details(appid):
     """
     Fetches information from the Steam Store page.
@@ -44,7 +54,10 @@ def get_store_details(appid):
     )
 
     if not app_data.get("success"):
-        return None
+        # This is distinct from a timeout, 429, or other HTTP/network
+        # failure. Repeated valid success=false responses are the only
+        # signal we use for the "Possibly delisted" classification.
+        raise SteamStoreMetadataUnavailable(appid)
 
     data = app_data.get(
         "data",

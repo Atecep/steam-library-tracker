@@ -9,6 +9,7 @@ The current release build has been tested with:
 - Python 3.14
 - PyInstaller 6.22.3
 - Streamlit 1.64.0
+- pywebview 6.2.1
 
 Python dependencies are pinned in:
 
@@ -34,7 +35,7 @@ Do **not** run the launcher with:
 streamlit run launcher.py
 ```
 
-The launcher is responsible for starting Streamlit, managing the local port and enforcing single-instance behaviour.
+The launcher starts Streamlit as a local headless backend, waits for it to become healthy, opens the UI in a pywebview desktop window, manages the local port and enforces single-instance behaviour. Closing the desktop window terminates the Streamlit backend.
 
 ---
 
@@ -74,6 +75,8 @@ python -m pip install -U pip
 python -m pip install -r requirements-build.txt
 ```
 
+On Linux the requirements install the pywebview Qt backend through PySide6. This makes the packaged desktop window self-contained from Python's point of view, but it also increases the Linux bundle size because Qt/WebEngine must be distributed with the application.
+
 ## 3. Run from source
 
 ```bash
@@ -105,7 +108,7 @@ From the project root:
 
 ```bash
 cd dist
-tar -cJf SteamLibraryTracker-v1.0.0-linux-x86_64.tar.xz SteamLibraryTracker
+tar -cJf SteamLibraryTracker-v1.1.0-linux-x86_64.tar.xz SteamLibraryTracker
 ```
 
 ## Testing a freshly rebuilt Linux bundle
@@ -186,6 +189,8 @@ python -m pip install -U pip
 python -m pip install -r requirements-build.txt
 ```
 
+The Windows desktop window uses Microsoft WebView2 through pywebview. Current Windows 10/11 installations normally already have the WebView2 Runtime through Microsoft Edge.
+
 Confirm PyInstaller is available:
 
 ```powershell
@@ -229,7 +234,7 @@ dist-windows\SteamLibraryTracker\
 into:
 
 ```text
-SteamLibraryTracker-v1.0.0-windows-x86_64.zip
+SteamLibraryTracker-v1.1.0-windows-x86_64.zip
 ```
 
 ---
@@ -283,7 +288,7 @@ For example:
 
 ```python
 APP_NAME = "Steam Library Tracker"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 GITHUB_REPOSITORY = "Atecep/steam-library-tracker"
 ```
 

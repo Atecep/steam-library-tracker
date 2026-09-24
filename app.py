@@ -10,6 +10,10 @@ from database import (
     init_database,
 )
 from settings import load_settings
+from metadata_background import (
+    start_metadata_background_refresh,
+    stop_metadata_background_refresh,
+)
 from steam_cache import (
     load_games,
     load_player_summary,
@@ -248,6 +252,7 @@ if (
 # =========================================================
 
 if not settings_configured:
+    stop_metadata_background_refresh()
     render_onboarding()
     st.stop()
 
@@ -300,10 +305,12 @@ try:
         steam_id
     )
 except Exception as error:
+    stop_metadata_background_refresh()
     show_library_load_error(error)
     st.stop()
 
 if not games:
+    stop_metadata_background_refresh()
     st.warning(
         "🎮 No games were found in this library."
     )
@@ -375,6 +382,13 @@ for game in games:
     )
 
 df = pd.DataFrame(data)
+
+# Populate/refresh Steam Store metadata gently in the background.
+# The worker uses only SQLite/network calls, never Streamlit UI calls, so
+# normal interaction and Smart Pick remain responsive.
+start_metadata_background_refresh(
+    df.to_dict("records")
+)
 
 show_selected_game_dialog(df)
 render_library(df)

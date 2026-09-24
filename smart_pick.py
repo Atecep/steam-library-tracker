@@ -2,12 +2,11 @@ import math
 import random
 
 from constants import (
-    SMART_PICK_SAMPLE_SIZE,
     STATUS_BACKLOG,
     STATUS_PLAYING,
     STATUS_UNPLAYED,
 )
-from metadata_service import get_game_metadata
+from database import get_all_game_metadata
 
 
 # =========================================================
@@ -235,169 +234,105 @@ def smart_pick(
     genre=None,
     category=None,
     min_positive_percentage=None,
-    sample_size=SMART_PICK_SAMPLE_SIZE,
 ):
+    """Select a game using weighted random selection.
+
+    Smart Pick never fetches metadata from Steam. When the selected criteria
+    do not require metadata, every eligible game can participate, including
+    games whose metadata is still missing or marked Possibly delisted.
+
+    Metadata becomes mandatory only when the user selects a genre, game mode
+    or minimum review score.
     """
-    Select a game using weighted random selection.
-
-    First:
-        - filter by status
-        - create a sample
-        - fetch metadata
-        - apply genre/category/review filters
-
-    Then:
-        - calculate the Smart Score
-        - make a weighted random selection
-    """
-
-    # -----------------------------------------------------
-    # Games eligible by status
-    # -----------------------------------------------------
 
     eligible_games = [
         game
         for game in games
-        if game.get("Status")
-        in statuses
+        if game.get("Status") in statuses
     ]
 
     if not eligible_games:
-
         return {
             "game": None,
             "eligible_count": 0,
             "inspected_count": 0,
             "matched_count": 0,
+            "metadata_required": False,
         }
 
-    # -----------------------------------------------------
-    # Random sample
-    # -----------------------------------------------------
+    cached_metadata = get_all_game_metadata()
 
-    sample_size = min(
-        sample_size,
-        len(eligible_games)
-    )
+    metadata_required = any([
+        genre is not None,
+        category is not None,
+        min_positive_percentage is not None,
+    ])
 
-    sample = random.sample(
-        eligible_games,
-        sample_size
+    games_with_metadata_count = sum(
+        1
+        for game in eligible_games
+        if int(game["AppID"]) in cached_metadata
     )
 
     candidates = []
 
-    # -----------------------------------------------------
-    # Metadata + filters
-    # -----------------------------------------------------
+    for game in eligible_games:
+        appid = int(game["AppID"])
+        metadata = cached_metadata.get(appid)
 
-    for game in sample:
-
-        appid = int(
-            game["AppID"]
-        )
-
-        try:
-
-            metadata = get_game_metadata(
-                appid
-            )
-
-        except Exception:
-
-            # A problematic game should not
-            # break the entire Smart Pick.
+        if metadata_required and metadata is None:
             continue
 
-        if metadata is None:
+        # With no metadata-dependent filters, missing metadata is valid.
+        # The score simply falls back to status/playtime weighting.
+        metadata_for_scoring = metadata or {}
+
+        if not matches_genre(metadata_for_scoring, genre):
             continue
 
-        if not matches_genre(
-            metadata,
-            genre
-        ):
-            continue
-
-        if not matches_category(
-            metadata,
-            category
-        ):
+        if not matches_category(metadata_for_scoring, category):
             continue
 
         if not matches_review_score(
-            metadata,
-            min_positive_percentage
+            metadata_for_scoring,
+            min_positive_percentage,
         ):
             continue
 
-        # -------------------------------------------------
-        # Smart Score
-        # -------------------------------------------------
-
         smart_score = calculate_smart_score(
             game,
-            metadata
+            metadata_for_scoring,
         )
 
         candidate = {
             **game,
-
-            "genres": metadata.get(
-                "genres",
-                []
-            ),
-
-            "categories": metadata.get(
-                "categories",
-                []
-            ),
-
-            "review_score": metadata.get(
-                "review_score"
-            ),
-
-            "review_description": metadata.get(
+            "genres": metadata_for_scoring.get("genres", []),
+            "categories": metadata_for_scoring.get("categories", []),
+            "review_score": metadata_for_scoring.get("review_score"),
+            "review_description": metadata_for_scoring.get(
                 "review_description"
             ),
-
-            "positive_percentage": metadata.get(
+            "positive_percentage": metadata_for_scoring.get(
                 "positive_percentage"
             ),
-
-            "total_reviews": metadata.get(
-                "total_reviews"
-            ),
-
+            "total_reviews": metadata_for_scoring.get("total_reviews"),
             "smart_score": smart_score,
         }
 
-        candidates.append(
-            candidate
-        )
-
-    # -----------------------------------------------------
-    # No candidates
-    # -----------------------------------------------------
+        candidates.append(candidate)
 
     if not candidates:
-
         return {
             "game": None,
-
-            "eligible_count": len(
-                eligible_games
+            "eligible_count": len(eligible_games),
+            "inspected_count": (
+                games_with_metadata_count
+                if metadata_required
+                else len(eligible_games)
             ),
-
-            "inspected_count": len(
-                sample
-            ),
-
             "matched_count": 0,
+            "metadata_required": metadata_required,
         }
-
-    # -----------------------------------------------------
-    # WEIGHTED SELECTION
-    # -----------------------------------------------------
 
     weights = [
         candidate["smart_score"]
@@ -407,21 +342,18 @@ def smart_pick(
     selected_game = random.choices(
         candidates,
         weights=weights,
-        k=1
+        k=1,
     )[0]
 
     return {
         "game": selected_game,
-
-        "eligible_count": len(
-            eligible_games
+        "eligible_count": len(eligible_games),
+        "inspected_count": (
+            games_with_metadata_count
+            if metadata_required
+            else len(eligible_games)
         ),
-
-        "inspected_count": len(
-            sample
-        ),
-
-        "matched_count": len(
-            candidates
-        ),
+        "matched_count": len(candidates),
+        "metadata_required": metadata_required,
     }
+

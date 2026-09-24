@@ -19,6 +19,7 @@ project_hiddenimports = [
     "constants",
     "database",
     "metadata_service",
+    "metadata_background",
     "settings",
     "smart_pick",
     "steam_api",

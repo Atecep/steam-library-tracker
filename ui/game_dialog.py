@@ -1,7 +1,13 @@
 import streamlit as st
 
-from constants import STATUSES
-from database import save_game_data
+from constants import (
+    METADATA_STATE_METADATA_UNAVAILABLE,
+    STATUSES,
+)
+from database import (
+    get_metadata_fetch_status,
+    save_game_data,
+)
 from metadata_service import get_game_metadata
 from smart_pick import smart_pick
 from ui.common import (
@@ -34,6 +40,13 @@ def show_game_details(game, df):
     except Exception:
         metadata = None
         metadata_load_failed = True
+
+    metadata_fetch_status = get_metadata_fetch_status(appid)
+    metadata_unavailable = (
+        metadata_fetch_status is not None
+        and metadata_fetch_status.get("state")
+        == METADATA_STATE_METADATA_UNAVAILABLE
+    )
 
     genres = []
     categories = []
@@ -183,7 +196,16 @@ def show_game_details(game, df):
             f"Steam: {review_description}"
         )
 
-    if metadata_load_failed:
+    if metadata_unavailable:
+
+        st.caption(
+            "⚠️ Metadata unavailable. Steam is not currently returning "
+            "Store metadata for this game. This can happen with removed "
+            "titles, special editions, unavailable Store pages, or other "
+            "Steam catalogue cases. The app will retry automatically."
+        )
+
+    elif metadata_load_failed:
 
         st.caption(
             "⚠️ Could not load all Steam metadata "
@@ -422,7 +444,7 @@ def show_game_details(game, df):
     # ACTIONS
     # =====================================================
 
-    action_col1, action_col2 = st.columns(2)
+    action_col1, action_col2, action_col3 = st.columns(3)
 
     with action_col1:
 
@@ -449,11 +471,24 @@ def show_game_details(game, df):
                     gallery_status_key
                 ] = status
 
-            clear_selected_game()
-
+            # Keep the game dialog open after saving.
+            # The full rerun reloads the row from SQLite, while
+            # selected_game_appid/open_game_dialog remain in session state.
             st.rerun()
 
     with action_col2:
+
+        st.link_button(
+            "▶️ Play / Install",
+            f"steam://launch/{appid}/dialog",
+            width="stretch",
+            help=(
+                "Open this game in the Steam client. "
+                "Steam will offer installation if needed."
+            )
+        )
+
+    with action_col3:
 
         st.link_button(
             "🛒 Open in Steam",

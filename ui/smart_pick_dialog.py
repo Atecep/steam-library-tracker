@@ -142,12 +142,13 @@ def show_smart_pick(df):
                     "criteria. Try relaxing the filters."
                 )
 
-                st.caption(
-                    f"Checked "
-                    f"{result['inspected_count']} de "
-                    f"{result['eligible_count']} "
-                    "eligible games."
-                )
+                if result.get("metadata_required"):
+                    st.caption(
+                        f"{result['inspected_count']} of "
+                        f"{result['eligible_count']} "
+                        "eligible games currently have cached metadata "
+                        "for metadata-based filtering."
+                    )
 
         else:
 

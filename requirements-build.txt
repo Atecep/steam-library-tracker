@@ -5,3 +5,5 @@ requests==2.34.2
 pyarrow==25.0.1
 psutil==7.2.2
 pyinstaller==6.22.3
+pywebview[pyside6]==6.2.1; sys_platform == "linux"
+pywebview==6.2.1; sys_platform == "win32"
