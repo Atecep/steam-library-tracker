@@ -9,7 +9,6 @@ The current release build has been tested with:
 - Python 3.14
 - PyInstaller 6.22.3
 - Streamlit 1.64.0
-- pywebview 6.2.1
 
 Python dependencies are pinned in:
 
@@ -35,7 +34,7 @@ Do **not** run the launcher with:
 streamlit run launcher.py
 ```
 
-The launcher starts Streamlit as a local headless backend, waits for it to become healthy, opens the UI in a pywebview desktop window, manages the local port and enforces single-instance behaviour. Closing the desktop window terminates the Streamlit backend.
+The launcher starts Streamlit locally, manages the local port, opens the app in the default web browser and enforces single-instance behaviour.
 
 ---
 
@@ -75,7 +74,6 @@ python -m pip install -U pip
 python -m pip install -r requirements-build.txt
 ```
 
-On Linux the requirements install the pywebview Qt backend through PySide6. This makes the packaged desktop window self-contained from Python's point of view, but it also increases the Linux bundle size because Qt/WebEngine must be distributed with the application.
 
 ## 3. Run from source
 
@@ -189,7 +187,6 @@ python -m pip install -U pip
 python -m pip install -r requirements-build.txt
 ```
 
-The Windows desktop window uses Microsoft WebView2 through pywebview. Current Windows 10/11 installations normally already have the WebView2 Runtime through Microsoft Edge.
 
 Confirm PyInstaller is available:
 

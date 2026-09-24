@@ -2,7 +2,7 @@
 
 A lightweight desktop app for organising, tracking and exploring your Steam library.
 
-Steam Library Tracker runs locally in its own desktop window and uses the Steam Web API to load your games and playtime. The interface is served locally by Streamlit and embedded with pywebview; no browser window is required. Personal statuses, notes and cached metadata are stored locally.
+Steam Library Tracker runs locally on your computer and uses the Steam Web API to load your games and playtime. The interface is served locally by Streamlit and opens in your default web browser. Personal statuses, notes and cached metadata are stored locally.
 
 ## Features
 
@@ -17,7 +17,6 @@ Steam Library Tracker runs locally in its own desktop window and uses the Steam 
 - Use **Smart Pick** when you do not know what to play
 - Fetch and cache Steam Store metadata
 - Local persistent storage
-- Native desktop window powered by pywebview (no browser window)
 - Single-instance launcher with automatic recovery
 - Update notifications through GitHub Releases
 - Standalone builds for Windows and Linux

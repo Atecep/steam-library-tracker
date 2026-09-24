@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import os
 import socket
-import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 from pathlib import Path
 from typing import BinaryIO
 
 import psutil
+from streamlit import config as streamlit_config
+from streamlit.web import bootstrap
 
 from app_paths import DATA_DIR, ensure_data_dir
 
@@ -22,20 +23,8 @@ FIRST_PORT = 8501
 LAST_PORT = 8599
 
 STARTUP_GRACE_SECONDS = 8.0
-STARTUP_TIMEOUT_SECONDS = 30.0
 RECOVERY_LOCK_TIMEOUT_SECONDS = 5.0
 HEALTH_TIMEOUT_SECONDS = 0.75
-PARENT_WATCH_INTERVAL_SECONDS = 1.0
-
-WINDOW_TITLE = "Steam Library Tracker"
-WINDOW_WIDTH = 1280
-WINDOW_HEIGHT = 800
-WINDOW_MIN_WIDTH = 960
-WINDOW_MIN_HEIGHT = 640
-
-BACKEND_MODE_ARG = "--streamlit-backend"
-PARENT_PID_ARG = "--parent-pid"
-PARENT_CREATE_TIME_ARG = "--parent-create-time"
 
 INSTANCE_STATE_PATH = DATA_DIR / "instance.json"
 INSTANCE_LOCK_PATH = DATA_DIR / "instance.lock"
@@ -186,7 +175,7 @@ def read_state() -> dict | None:
 
 
 def write_state(port: int) -> dict:
-    """Atomically write identity information for this exact launcher process."""
+    """Atomically write identity information for this exact process."""
     ensure_data_dir()
 
     process = psutil.Process(os.getpid())
@@ -301,11 +290,11 @@ def terminate_hung_instance(process: psutil.Process) -> None:
         pass
 
 
-def recover_or_exit(lock: InstanceLock) -> bool:
+def recover_or_reopen(lock: InstanceLock) -> bool:
     """
     Handle the case where another process currently owns the OS lock.
 
-    Returns True when an existing healthy desktop instance is already running.
+    Returns True when an existing healthy instance was reopened.
     Returns False when recovery succeeded and this process acquired the lock.
     """
     state, process = wait_for_healthy_instance(
@@ -317,8 +306,7 @@ def recover_or_exit(lock: InstanceLock) -> bool:
         and process is not None
         and server_is_healthy(state["port"])
     ):
-        # The existing pywebview window belongs to the other launcher process.
-        # Do not open a browser as the old launcher did; simply keep one instance.
+        webbrowser.open(app_url(state["port"]))
         return True
 
     if process is not None:
@@ -344,208 +332,13 @@ def recover_or_exit(lock: InstanceLock) -> bool:
     )
 
 
-def _argument_value(name: str) -> str | None:
-    try:
-        index = sys.argv.index(name)
-        return sys.argv[index + 1]
-    except (ValueError, IndexError):
-        return None
-
-
-def _is_backend_mode() -> bool:
-    return BACKEND_MODE_ARG in sys.argv
-
-
-def _monitor_parent(parent_pid: int, parent_create_time: float) -> None:
-    """Stop an orphaned Streamlit backend if its desktop launcher disappears."""
-    while True:
-        try:
-            parent = psutil.Process(parent_pid)
-            current_create_time = parent.create_time()
-            if abs(current_create_time - parent_create_time) > 0.01:
-                os._exit(0)
-            if parent.status() == psutil.STATUS_ZOMBIE:
-                os._exit(0)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            os._exit(0)
-
-        time.sleep(PARENT_WATCH_INTERVAL_SECONDS)
-
-
-def run_streamlit_backend() -> None:
-    """Run Streamlit headlessly in the child process used by pywebview."""
-    port_value = _argument_value(BACKEND_MODE_ARG)
-    parent_pid_value = _argument_value(PARENT_PID_ARG)
-    parent_create_time_value = _argument_value(PARENT_CREATE_TIME_ARG)
-
-    if port_value is None:
-        raise RuntimeError("Missing Streamlit backend port.")
-
-    port = int(port_value)
-
-    if parent_pid_value is not None and parent_create_time_value is not None:
-        parent_watcher = threading.Thread(
-            target=_monitor_parent,
-            args=(int(parent_pid_value), float(parent_create_time_value)),
-            daemon=True,
-            name="launcher-parent-watch",
-        )
-        parent_watcher.start()
-
-    app_path = get_bundle_dir() / "app.py"
-    if not app_path.exists():
-        raise FileNotFoundError(
-            f"Could not find bundled app.py at: {app_path}"
-        )
-
-    from streamlit import config as streamlit_config
-    from streamlit.web import bootstrap
-
-    flag_options = {
-        "global_developmentMode": False,
-        "server_address": HOST,
-        "server_port": port,
-        "server_headless": True,
-        "server_fileWatcherType": "none",
-        "browser_serverAddress": HOST,
-        "browser_serverPort": port,
-        "browser_gatherUsageStats": False,
-        "client_toolbarMode": "viewer",
-        "logger_hideWelcomeMessage": True,
-    }
-
-    streamlit_config._main_script_path = str(app_path)
-    bootstrap.load_config_options(flag_options)
-    bootstrap.run(
-        str(app_path),
-        False,
-        [],
-        flag_options,
-    )
-
-
-def build_backend_command(port: int) -> list[str]:
-    parent = psutil.Process(os.getpid())
-    backend_args = [
-        BACKEND_MODE_ARG,
-        str(port),
-        PARENT_PID_ARG,
-        str(parent.pid),
-        PARENT_CREATE_TIME_ARG,
-        str(parent.create_time()),
-    ]
-
-    if getattr(sys, "frozen", False):
-        return [sys.executable, *backend_args]
-
-    return [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        *backend_args,
-    ]
-
-
-def start_streamlit_backend(port: int) -> subprocess.Popen:
-    """Start the local Streamlit server as a separate child process."""
-    return subprocess.Popen(
-        build_backend_command(port),
-        stdin=subprocess.DEVNULL,
-    )
-
-
-def wait_for_streamlit_backend(
-    process: subprocess.Popen,
-    port: int,
-    timeout: float = STARTUP_TIMEOUT_SECONDS,
-) -> None:
-    """Wait until Streamlit is ready before showing the desktop window."""
-    deadline = time.monotonic() + timeout
-
-    while time.monotonic() < deadline:
-        return_code = process.poll()
-        if return_code is not None:
-            raise RuntimeError(
-                "The local Streamlit server stopped during startup "
-                f"(exit code {return_code})."
-            )
-
-        if server_is_healthy(port):
-            return
-
-        time.sleep(0.15)
-
-    raise RuntimeError(
-        "The local Streamlit server did not become ready in time."
-    )
-
-
-def terminate_backend(process: subprocess.Popen | None) -> None:
-    """Terminate the Streamlit child process when the desktop window closes."""
-    if process is None or process.poll() is not None:
-        return
-
-    try:
-        process.terminate()
-        process.wait(timeout=3.0)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-
-    try:
-        process.kill()
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        pass
-
-
-def open_desktop_window(port: int) -> None:
-    """Open the local Streamlit UI in a native pywebview desktop window."""
-    if sys.platform.startswith("linux"):
-        # Keep QtPy deterministic even on systems that also have another Qt binding.
-        os.environ.setdefault("QT_API", "pyside6")
-
-    try:
-        import webview
-    except ImportError as error:
-        raise RuntimeError(
-            "pywebview is not installed. Install the build dependencies with "
-            "'python -m pip install -r requirements-build.txt'."
-        ) from error
-
-    # Preserve existing application behaviour inside the embedded browser.
-    # Downloads are used by backup/export, while target=_blank links should be
-    # handed back to the operating system (browser, Steam protocol handler, etc.).
-    webview.settings["ALLOW_DOWNLOADS"] = True
-    webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
-    webview.settings["OPEN_DEVTOOLS_IN_DEBUG"] = False
-
-    webview.create_window(
-        WINDOW_TITLE,
-        app_url(port),
-        width=WINDOW_WIDTH,
-        height=WINDOW_HEIGHT,
-        min_size=(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT),
-        resizable=True,
-        text_select=True,
-    )
-
-    if sys.platform.startswith("linux"):
-        # Linux release builds install the PySide6/Qt backend explicitly.
-        webview.start(gui="qt")
-    elif sys.platform == "win32":
-        # Streamlit needs a modern engine; Windows 10/11 normally provide WebView2.
-        webview.start(gui="edgechromium")
-    else:
-        webview.start()
-
-
 def main() -> None:
     ensure_data_dir()
 
     lock = InstanceLock(INSTANCE_LOCK_PATH)
 
     if not lock.try_acquire():
-        if recover_or_exit(lock):
+        if recover_or_reopen(lock):
             return
 
     app_path = get_bundle_dir() / "app.py"
@@ -558,20 +351,34 @@ def main() -> None:
 
     port = find_free_port()
     write_state(port)
-    backend_process: subprocess.Popen | None = None
+
+    flag_options = {
+        "global_developmentMode": False,
+        "server_address": HOST,
+        "server_port": port,
+        "server_headless": False,
+        "server_fileWatcherType": "none",
+        "browser_serverAddress": HOST,
+        "browser_serverPort": port,
+        "browser_gatherUsageStats": False,
+        "client_toolbarMode": "viewer",
+        "logger_hideWelcomeMessage": True,
+    }
+
+    streamlit_config._main_script_path = str(app_path)
+    bootstrap.load_config_options(flag_options)
 
     try:
-        backend_process = start_streamlit_backend(port)
-        wait_for_streamlit_backend(backend_process, port)
-        open_desktop_window(port)
+        bootstrap.run(
+            str(app_path),
+            False,
+            [],
+            flag_options,
+        )
     finally:
-        terminate_backend(backend_process)
         remove_own_state()
         lock.release()
 
 
 if __name__ == "__main__":
-    if _is_backend_mode():
-        run_streamlit_backend()
-    else:
-        main()
+    main()
