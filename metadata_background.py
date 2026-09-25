@@ -42,6 +42,8 @@ _state_lock = threading.Lock()
 _worker_thread = None
 _stop_event = threading.Event()
 _library_games = []
+_priority_appids = []
+_completed_library_signature = None
 
 
 def _normalise_library_games(games):
@@ -79,9 +81,56 @@ def _normalise_library_games(games):
     return normalised
 
 
+def _library_signature(games):
+    """Stable identity for the owned library, independent of personal status."""
+    return tuple(sorted(item["appid"] for item in games))
+
+
 def _current_library_games():
     with _state_lock:
         return list(_library_games)
+
+
+def _take_priority_batch(limit):
+    """Pop a small batch of user-requested metadata rechecks."""
+    global _priority_appids
+
+    with _state_lock:
+        batch = _priority_appids[:limit]
+        _priority_appids = _priority_appids[limit:]
+
+    return batch
+
+
+def _queue_priority_appids(appids, valid_appids):
+    """Queue manual rechecks once, keeping the user's library order-safe."""
+    global _priority_appids
+
+    requested = []
+    seen = set()
+
+    for appid in appids:
+        try:
+            appid = int(appid)
+        except (TypeError, ValueError):
+            continue
+
+        if appid not in valid_appids or appid in seen:
+            continue
+
+        seen.add(appid)
+        requested.append(appid)
+
+    with _state_lock:
+        already_queued = set(_priority_appids)
+        new_appids = [
+            appid
+            for appid in requested
+            if appid not in already_queued
+        ]
+        _priority_appids.extend(new_appids)
+
+    return len(new_appids)
 
 
 def _candidate_appids(games):
@@ -117,7 +166,7 @@ def _wait(seconds):
 
 
 def _worker_loop():
-    global _worker_thread
+    global _worker_thread, _completed_library_signature
 
     print(
         "[metadata] Background refresh started "
@@ -134,25 +183,47 @@ def _worker_loop():
             if not games:
                 break
 
-            candidates, _, _ = _candidate_appids(games)
+            priority_batch = _take_priority_batch(
+                METADATA_BACKGROUND_BATCH_SIZE
+            )
 
-            if not candidates:
-                print("[metadata] Cache is up to date for this library.")
-                break
+            if priority_batch:
+                batch = [
+                    (appid, True)
+                    for appid in priority_batch
+                ]
+            else:
+                candidates, _, _ = _candidate_appids(games)
 
-            # Build a small queue to avoid rescanning the whole SQLite cache
-            # after every single game. Requests are still strictly sequential
-            # with a pause after each one; there is no burst of 10 requests.
-            batch = candidates[:METADATA_BACKGROUND_BATCH_SIZE]
+                if not candidates:
+                    # Remember that this exact owned-library snapshot has
+                    # already been checked. Streamlit reruns the app script
+                    # frequently; without this guard each rerun would start a
+                    # new worker only to discover the same empty queue.
+                    with _state_lock:
+                        _completed_library_signature = _library_signature(games)
+
+                    print("[metadata] Cache is up to date for this library.")
+                    break
+
+                # Build a small queue to avoid rescanning the whole SQLite
+                # cache after every single game. Requests are still strictly
+                # sequential with a pause after each one; there is no burst.
+                batch = [
+                    (appid, False)
+                    for appid in candidates[:METADATA_BACKGROUND_BATCH_SIZE]
+                ]
+
             network_backoff = None
 
-            for index, appid in enumerate(batch):
+            for index, (appid, force_refresh) in enumerate(batch):
                 if _stop_event.is_set():
                     break
 
                 try:
                     metadata = get_game_metadata(
                         appid,
+                        force_refresh=force_refresh,
                         allow_stale_on_error=False,
                     )
 
@@ -163,7 +234,7 @@ def _worker_loop():
 
                 except SteamStoreMetadataUnavailable:
                     # metadata_service has already persisted the retry state
-                    # and incremented delisted evidence for this AppID.
+                    # for this AppID.
                     total_deferred += 1
 
                 except requests.HTTPError as error:
@@ -236,15 +307,24 @@ def _worker_loop():
 
 
 def start_metadata_background_refresh(games):
-    """Start or update the single background metadata worker."""
-    global _worker_thread, _library_games
+    """Start or update the single background metadata worker.
+
+    Once a library snapshot has been confirmed up to date, ordinary Streamlit
+    reruns do not start another worker for that same set of AppIDs. A changed
+    library or an explicit manual recheck can start it again.
+    """
+    global _worker_thread, _library_games, _completed_library_signature
 
     normalised = _normalise_library_games(games)
+    signature = _library_signature(normalised)
 
     with _state_lock:
         _library_games = normalised
 
         if _worker_thread is not None and _worker_thread.is_alive():
+            return False
+
+        if signature and signature == _completed_library_signature:
             return False
 
         _stop_event.clear()
@@ -256,6 +336,37 @@ def start_metadata_background_refresh(games):
         _worker_thread.start()
 
     return True
+
+
+def request_metadata_recheck(games, appids):
+    """Prioritise a manual recheck of selected games.
+
+    The check still uses the normal gentle request cadence and respects any
+    active network/rate-limit backoff. Retry windows for these AppIDs are
+    bypassed only for this user-requested pass.
+    """
+    global _worker_thread, _library_games, _completed_library_signature
+
+    normalised = _normalise_library_games(games)
+    valid_appids = {item["appid"] for item in normalised}
+
+    with _state_lock:
+        _library_games = normalised
+        _completed_library_signature = None
+
+    queued = _queue_priority_appids(appids, valid_appids)
+
+    with _state_lock:
+        if _worker_thread is None or not _worker_thread.is_alive():
+            _stop_event.clear()
+            _worker_thread = threading.Thread(
+                target=_worker_loop,
+                name="steam-metadata-refresh",
+                daemon=True,
+            )
+            _worker_thread.start()
+
+    return queued
 
 
 def stop_metadata_background_refresh():

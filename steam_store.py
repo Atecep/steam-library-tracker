@@ -13,9 +13,11 @@ HEADERS = {
     "User-Agent": "SteamLibraryTracker/0.1"
 }
 
+REGIONAL_FALLBACK_COUNTRY = "us"
+
 
 class SteamStoreMetadataUnavailable(Exception):
-    """Steam returned a valid appdetails response with success=false."""
+    """Steam returned valid appdetails responses with success=false."""
 
     def __init__(self, appid):
         super().__init__(
@@ -24,39 +26,53 @@ class SteamStoreMetadataUnavailable(Exception):
         self.appid = int(appid)
 
 
-def get_store_details(appid):
-    """
-    Fetches information from the Steam Store page.
-
-    Returns genres, categories, developers,
-    publishers and other basic information.
-    """
-
+def _request_store_details(appid, country_code=None):
+    """Return the raw appdetails entry for one Store region."""
     params = {
         "appids": appid,
-        "l": "english"
+        "l": "english",
     }
+
+    if country_code:
+        params["cc"] = country_code
 
     response = requests.get(
         APP_DETAILS_URL,
         params=params,
         headers=HEADERS,
-        timeout=15
+        timeout=15,
     )
 
     response.raise_for_status()
 
     payload = response.json()
+    return payload.get(str(appid), {})
 
-    app_data = payload.get(
-        str(appid),
-        {}
-    )
+
+def get_store_details(appid):
+    """
+    Fetches information from the Steam Store page.
+
+    If the default Store region returns success=false, retry once against
+    the US storefront. This recovers general catalogue metadata for games
+    whose Store page is unavailable in the user's current region.
+
+    Only general game metadata is consumed by this app; regional pricing,
+    currency, discounts and purchase availability are intentionally ignored.
+    """
+
+    app_data = _request_store_details(appid)
+
+    if not app_data.get("success"):
+        app_data = _request_store_details(
+            appid,
+            country_code=REGIONAL_FALLBACK_COUNTRY,
+        )
 
     if not app_data.get("success"):
         # This is distinct from a timeout, 429, or other HTTP/network
-        # failure. Repeated valid success=false responses are the only
-        # signal we use for the "Possibly delisted" classification.
+        # failure. Metadata is considered unavailable only after both the
+        # normal Store request and the single regional fallback fail.
         raise SteamStoreMetadataUnavailable(appid)
 
     data = app_data.get(

@@ -1,8 +1,13 @@
 import altair as alt
+import math
 import pandas as pd
 import streamlit as st
 
-from database import get_metadata_unavailable_appids
+from database import (
+    get_all_game_metadata,
+    get_metadata_unavailable_appids,
+)
+from metadata_background import request_metadata_recheck
 from constants import (
     GAMES_PER_ROW,
     PAGE_SIZE,
@@ -77,25 +82,93 @@ def _set_metadata_only_view(enabled):
     st.session_state.library_metadata_only = bool(enabled)
     st.session_state.gallery_page = 1
 
+    st.session_state.library_scroll_to_top = True
+
+
+def _render_metadata_view_controls(
+    position,
+    total_results,
+    library_df,
+    metadata_unavailable_appids,
+):
+    """Render controls for the metadata-only library view."""
+
+    # Keep the top navigation deliberately minimal.
+    if position == "top":
+        st.button(
+            "Show all games",
+            type="tertiary",
+            key="show_all_games_top",
+            on_click=_set_metadata_only_view,
+            args=(False,),
+        )
+        return
+
+    # Keep the bottom metadata controls simple and left-aligned.
+    # This avoids wide-page column layouts pushing actions toward the centre.
+    st.caption(
+        f"Showing {total_results} games without metadata"
+    )
+
+    if st.button(
+        "Check for metadata updates",
+        type="tertiary",
+        key=f"recheck_metadata_{position}",
+    ):
+        queued = request_metadata_recheck(
+            library_df.to_dict("records"),
+            metadata_unavailable_appids,
+        )
+
+        if queued > 0:
+            st.toast(
+                f"Checking metadata for {queued} game"
+                + ("s" if queued != 1 else "")
+                + "."
+            )
+        else:
+            st.toast(
+                "Metadata recheck is already queued."
+            )
+
+    st.button(
+        "Show all games",
+        type="tertiary",
+        key=f"show_all_games_{position}",
+        on_click=_set_metadata_only_view,
+        args=(False,),
+    )
+
 
 def _render_gallery_pagination(
     total_results,
     current_page,
     total_pages,
-    position
+    position,
+    metadata_only=False,
+    library_df=None,
+    metadata_unavailable_appids=None,
 ):
     """Render compact pagination controls at the top or bottom."""
 
     results_col, prev_col, page_col, next_col = st.columns(
         [7.2, 0.55, 0.75, 0.55],
-        vertical_alignment="center",
+        vertical_alignment="top",
         gap="small"
     )
 
     with results_col:
-        st.markdown(
-            f"**{total_results} games found**"
-        )
+        if metadata_only:
+            _render_metadata_view_controls(
+                position=position,
+                total_results=total_results,
+                library_df=library_df,
+                metadata_unavailable_appids=metadata_unavailable_appids,
+            )
+        else:
+            st.markdown(
+                f"**{total_results} games found**"
+            )
 
     with prev_col:
         if st.button(
@@ -209,9 +282,30 @@ def render_library_overview(
 
     chart_data = pd.DataFrame(status_data)
 
-    st.markdown(
-        f"**🎮 {total_games} games in your library**"
+    header_col, stats_col, spacer_col = st.columns(
+        [2.5, 5.0, 2.5],
+        vertical_alignment="center",
+        gap="small",
     )
+
+    with header_col:
+        st.markdown(
+            f"**🎮 {total_games} games in your library**"
+        )
+
+    with stats_col:
+        st.markdown(
+            '<div style="display:flex; align-items:center; justify-content:center; '
+            'gap:28px; flex-wrap:nowrap; color:#9ca3af; font-size:0.875rem; '
+            'white-space:nowrap;">'
+            + "".join(
+                f"<span>{item['Icon']} {item['Status']}: "
+                f"{item['Games']} · {item['Percentage']:.1f}%</span>"
+                for item in status_data
+            )
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
     chart = (
         alt.Chart(chart_data)
@@ -330,20 +424,48 @@ def render_library_overview(
         selection_mode="library_status_selection"
     )
 
-    legend_columns = st.columns(4)
-
-    for column, item in zip(
-        legend_columns,
-        status_data
-    ):
-        with column:
-            st.caption(
-                f"{item['Icon']} {item['Status']}: "
-                f"{item['Games']} · "
-                f"{item['Percentage']:.1f}%"
-            )
 
 def render_library(df):
+    # Stable anchor used when switching between the normal library and the
+    # metadata-unavailable view. It lives in the parent Streamlit document,
+    # so the tiny component below can reliably scroll to it after a rerun.
+    st.markdown(
+        "<div id='library-top-anchor' style='height:0; margin:0; padding:0;'></div>",
+        unsafe_allow_html=True
+    )
+
+    if st.session_state.pop("library_scroll_to_top", False):
+        # st.iframe accepts trusted raw HTML and allows JavaScript to access
+        # the same-origin Streamlit parent document. This replaces the
+        # deprecated st.components.v1.html helper.
+        st.iframe(
+            """
+            <script>
+            const parentDocument = window.parent.document;
+
+            const scrollToLibraryTop = () => {
+                const anchor = parentDocument.getElementById('library-top-anchor');
+
+                if (anchor) {
+                    anchor.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                    return true;
+                }
+
+                return false;
+            };
+
+            if (!scrollToLibraryTop()) {
+                setTimeout(scrollToLibraryTop, 80);
+                setTimeout(scrollToLibraryTop, 220);
+            }
+            </script>
+            """,
+            height=1
+        )
+
     total_games = len(df)
 
     status_counts = df["Status"].value_counts()
@@ -454,6 +576,47 @@ def render_library(df):
         )
 
     # -----------------------------------------------------
+    # Contextual default sorting
+    # -----------------------------------------------------
+
+    status_signature = tuple(status_filters)
+    previous_status_signature = st.session_state.get(
+        "library_sort_status_signature"
+    )
+
+    only_never_played = (
+        len(status_filters) == 1
+        and status_filters[0] == STATUS_UNPLAYED
+    )
+
+    previously_only_never_played = (
+        previous_status_signature == (STATUS_UNPLAYED,)
+    )
+
+    if previous_status_signature != status_signature:
+        if only_never_played:
+            # Entering the Never played-only view gets a useful alphabetical
+            # default. The user can still change it afterwards.
+            st.session_state.library_sort = "Name"
+            st.session_state.library_order = "Ascending"
+            st.session_state.library_never_played_auto_sort = True
+
+        elif (
+            previously_only_never_played
+            and st.session_state.get(
+                "library_never_played_auto_sort",
+                False,
+            )
+        ):
+            # Restore the normal library default only if the user did not
+            # override the automatic Never played ordering.
+            st.session_state.library_sort = "Hours"
+            st.session_state.library_order = "Descending"
+            st.session_state.library_never_played_auto_sort = False
+
+        st.session_state.library_sort_status_signature = status_signature
+
+    # -----------------------------------------------------
     # Sort by
     # -----------------------------------------------------
 
@@ -464,6 +627,7 @@ def render_library(df):
             [
                 "Hours",
                 "Name",
+                "SLT Review Score",
             ],
             key="library_sort"
         )
@@ -482,6 +646,14 @@ def render_library(df):
             ],
             key="library_order"
         )
+
+    # If the user changes away from the automatic Never played default,
+    # do not overwrite that choice when leaving the view.
+    if only_never_played and (
+        sort_by != "Name"
+        or order != "Ascending"
+    ):
+        st.session_state.library_never_played_auto_sort = False
 
     # =====================================================
     # SEARCH + FILTERS
@@ -580,6 +752,103 @@ def render_library(df):
             )
         )
 
+    # -----------------------------------------------------
+    # SLT Review Score
+    # -----------------------------------------------------
+
+    elif sort_by == "SLT Review Score":
+        # Reviews already live in the local SQLite metadata cache. Reading
+        # them here never triggers a Steam request. Ranking uses the lower
+        # bound of a 95% Wilson score interval so that tiny samples do not
+        # outrank very highly rated games with substantial review counts.
+        metadata_by_appid = get_all_game_metadata()
+
+        positive_percentage = {
+            appid: metadata.get("positive_percentage")
+            for appid, metadata in metadata_by_appid.items()
+        }
+
+        total_reviews = {
+            appid: metadata.get("total_reviews")
+            for appid, metadata in metadata_by_appid.items()
+        }
+
+        filtered_df["_Review_percentage"] = (
+            pd.to_numeric(
+                filtered_df["AppID"].map(positive_percentage),
+                errors="coerce",
+            )
+        )
+        filtered_df["_Total_reviews"] = (
+            pd.to_numeric(
+                filtered_df["AppID"].map(total_reviews),
+                errors="coerce",
+            )
+        )
+
+        def _wilson_lower_bound(row):
+            percentage = row["_Review_percentage"]
+            total = row["_Total_reviews"]
+
+            if pd.isna(percentage) or pd.isna(total) or total <= 0:
+                return float("nan")
+
+            p_hat = max(0.0, min(1.0, float(percentage) / 100.0))
+            n = float(total)
+            z = 1.96  # 95% confidence interval
+            z_squared = z * z
+
+            numerator = (
+                p_hat
+                + z_squared / (2.0 * n)
+                - z
+                * math.sqrt(
+                    (p_hat * (1.0 - p_hat) / n)
+                    + z_squared / (4.0 * n * n)
+                )
+            )
+            denominator = 1.0 + z_squared / n
+            return numerator / denominator
+
+        filtered_df["_Wilson_score"] = filtered_df.apply(
+            _wilson_lower_bound,
+            axis=1,
+        )
+        filtered_df["_Reviews_missing"] = (
+            filtered_df["_Wilson_score"].isna()
+        )
+        filtered_df["_Game_sort"] = (
+            filtered_df["Game"].str.lower()
+        )
+
+        filtered_df = (
+            filtered_df
+            .sort_values(
+                by=[
+                    "_Reviews_missing",
+                    "_Wilson_score",
+                    "_Total_reviews",
+                    "_Game_sort",
+                ],
+                ascending=[
+                    True,
+                    ascending,
+                    False,
+                    True,
+                ],
+                na_position="last",
+            )
+            .drop(
+                columns=[
+                    "_Review_percentage",
+                    "_Total_reviews",
+                    "_Wilson_score",
+                    "_Reviews_missing",
+                    "_Game_sort",
+                ]
+            )
+        )
+
     # =====================================================
     # GALLERY
     # =====================================================
@@ -624,49 +893,44 @@ def render_library(df):
 
     if total_results == 0:
 
-        st.markdown(
-            "**0 games found**"
-        )
-
         if metadata_only:
+            _render_metadata_view_controls(
+                position="empty",
+                total_results=0,
+                library_df=df,
+                metadata_unavailable_appids=metadata_unavailable_appids,
+            )
 
             st.info(
                 "🎮 No games without metadata match the current filters."
             )
 
-            st.button(
-                "Show all games",
-                type="tertiary",
-                key="show_all_games_empty",
-                on_click=_set_metadata_only_view,
-                args=(False,)
-            )
-
-        elif search_term and status_filters:
-
-            st.info(
-                "🔎 No games match your search and the selected "
-                "statuses. Try changing the filters."
-            )
-
-        elif search_term:
-
-            st.info(
-                "🔎 No games match your search. "
-                "Try another name."
-            )
-
-        elif status_filters:
-
-            st.info(
-                "🎮 There are no games with the selected statuses."
-            )
-
         else:
-
-            st.info(
-                "🎮 There are no games to show."
+            st.markdown(
+                "**0 games found**"
             )
+
+            if search_term and status_filters:
+                st.info(
+                    "🔎 No games match your search and the selected "
+                    "statuses. Try changing the filters."
+                )
+
+            elif search_term:
+                st.info(
+                    "🔎 No games match your search. "
+                    "Try another name."
+                )
+
+            elif status_filters:
+                st.info(
+                    "🎮 There are no games with the selected statuses."
+                )
+
+            else:
+                st.info(
+                    "🎮 There are no games to show."
+                )
 
         st.stop()
 
@@ -699,7 +963,10 @@ def render_library(df):
         total_results=total_results,
         current_page=current_page,
         total_pages=total_pages,
-        position="top"
+        position="top",
+        metadata_only=metadata_only,
+        library_df=df,
+        metadata_unavailable_appids=metadata_unavailable_appids,
     )
 
     # -------------------------------------------------
@@ -882,30 +1149,21 @@ def render_library(df):
         total_results=total_results,
         current_page=current_page,
         total_pages=total_pages,
-        position="bottom"
+        position="bottom",
+        metadata_only=metadata_only,
+        library_df=df,
+        metadata_unavailable_appids=metadata_unavailable_appids,
     )
 
     # -------------------------------------------------
     # Discreet metadata-unavailable view
     # -------------------------------------------------
 
-    if metadata_unavailable_count > 0:
-        if metadata_only:
-            st.caption(
-                f"Showing {metadata_unavailable_count} games without metadata."
-            )
-            st.button(
-                "Show all games",
-                type="tertiary",
-                key="show_all_games_footer",
-                on_click=_set_metadata_only_view,
-                args=(False,)
-            )
-        else:
-            st.button(
-                f"Games without metadata ({metadata_unavailable_count})",
-                type="tertiary",
-                key="show_games_without_metadata_footer",
-                on_click=_set_metadata_only_view,
-                args=(True,)
-            )
+    if metadata_unavailable_count > 0 and not metadata_only:
+        st.button(
+            f"Games without metadata ({metadata_unavailable_count})",
+            type="tertiary",
+            key="show_games_without_metadata_footer",
+            on_click=_set_metadata_only_view,
+            args=(True,)
+        )

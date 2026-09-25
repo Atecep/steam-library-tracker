@@ -106,7 +106,7 @@ From the project root:
 
 ```bash
 cd dist
-tar -cJf SteamLibraryTracker-v1.1.0-linux-x86_64.tar.xz SteamLibraryTracker
+tar -cJf SteamLibraryTracker-v1.2.0-linux-x86_64.tar.xz SteamLibraryTracker
 ```
 
 ## Testing a freshly rebuilt Linux bundle
@@ -231,7 +231,7 @@ dist-windows\SteamLibraryTracker\
 into:
 
 ```text
-SteamLibraryTracker-v1.1.0-windows-x86_64.zip
+SteamLibraryTracker-v1.2.0-windows-x86_64.zip
 ```
 
 ---

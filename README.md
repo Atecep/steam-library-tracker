@@ -14,6 +14,7 @@ Steam Library Tracker runs locally on your computer and uses the Steam Web API t
   - Finished
 - Add personal notes to games
 - Browse and filter your library
+- Sort games using **SLT Review Score**, which uses a 95% Wilson confidence score to balance positive review percentage with the number of reviews and avoid over-ranking very small samples
 - Use **Smart Pick** when you do not know what to play
 - Fetch and cache Steam Store metadata
 - Local persistent storage
@@ -43,7 +44,7 @@ No Python installation is required.
 2. Extract it:
 
 ```bash
-tar -xf SteamLibraryTracker-v1.1.0-linux-x86_64.tar.xz
+tar -xf SteamLibraryTracker-v1.2.0-linux-x86_64.tar.xz
 ```
 
 3. Enter the extracted directory and run:
