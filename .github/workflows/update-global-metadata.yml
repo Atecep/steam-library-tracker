@@ -1,0 +1,98 @@
+name: Update Global Metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      steam_limit:
+        description: "Steam games to process in this run"
+        required: true
+        default: "100"
+      hltb_limit:
+        description: "HLTB games to process in this run"
+        required: true
+        default: "100"
+
+  schedule:
+    # Daily at 02:17 UTC. Non-round minute avoids the busiest cron boundary.
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: global-metadata-update
+  cancel-in-progress: false
+
+jobs:
+  update-global-metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STEAM_WEB_API_KEY: ${{ secrets.STEAM_WEB_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: "pip"
+          cache-dependency-path: global_metadata/requirements.txt
+
+      - name: Install global metadata dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r global_metadata/requirements.txt
+
+      - name: Prepare database directory
+        run: mkdir -p global_metadata/data
+
+      - name: Download current global database
+        run: |
+          gh release download global-db             --pattern "global_metadata.db"             --dir global_metadata/data             --clobber
+
+      - name: Select batch sizes
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "STEAM_LIMIT=${{ inputs.steam_limit }}" >> "$GITHUB_ENV"
+            echo "HLTB_LIMIT=${{ inputs.hltb_limit }}" >> "$GITHUB_ENV"
+          else
+            echo "STEAM_LIMIT=1000" >> "$GITHUB_ENV"
+            echo "HLTB_LIMIT=1000" >> "$GITHUB_ENV"
+          fi
+
+      - name: Update global metadata
+        run: |
+          python global_metadata/build_global_database.py             --steam-limit "$STEAM_LIMIT"             --hltb-limit "$HLTB_LIMIT"
+
+      - name: Checkpoint and verify SQLite database
+        run: |
+          python - <<'PY'
+          import sqlite3
+          from pathlib import Path
+
+          db = Path("global_metadata/data/global_metadata.db")
+
+          with sqlite3.connect(db) as conn:
+              conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+              result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+
+          if result != "ok":
+              raise SystemExit(f"SQLite integrity check failed: {result}")
+
+          print("SQLite integrity check: ok")
+          PY
+
+      - name: Create checksum
+        run: |
+          cd global_metadata/data
+          sha256sum global_metadata.db > global_metadata.db.sha256
+
+      - name: Publish updated database
+        run: |
+          gh release upload global-db             global_metadata/data/global_metadata.db             global_metadata/data/global_metadata.db.sha256             --clobber
