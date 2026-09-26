@@ -5,6 +5,7 @@ import streamlit as st
 
 from database import (
     get_all_game_metadata,
+    get_all_hltb_metadata,
     get_metadata_unavailable_appids,
 )
 from metadata_background import request_metadata_recheck
@@ -78,10 +79,24 @@ def _refresh_library_status_chart():
 
 
 def _set_metadata_only_view(enabled):
-    """Toggle the technical metadata-only library view."""
+    """Toggle the technical Steam-metadata-only library view."""
     st.session_state.library_metadata_only = bool(enabled)
-    st.session_state.gallery_page = 1
 
+    if enabled:
+        st.session_state.library_hltb_metadata_only = False
+
+    st.session_state.gallery_page = 1
+    st.session_state.library_scroll_to_top = True
+
+
+def _set_hltb_metadata_only_view(enabled):
+    """Toggle the technical HLTB-metadata-only library view."""
+    st.session_state.library_hltb_metadata_only = bool(enabled)
+
+    if enabled:
+        st.session_state.library_metadata_only = False
+
+    st.session_state.gallery_page = 1
     st.session_state.library_scroll_to_top = True
 
 
@@ -140,12 +155,42 @@ def _render_metadata_view_controls(
     )
 
 
+def _render_hltb_metadata_view_controls(
+    position,
+    total_results,
+):
+    """Render controls for the HLTB-metadata-only library view."""
+
+    if position == "top":
+        st.button(
+            "Show all games",
+            type="tertiary",
+            key="show_all_games_hltb_top",
+            on_click=_set_hltb_metadata_only_view,
+            args=(False,),
+        )
+        return
+
+    st.caption(
+        f"Showing {total_results} games without HLTB metadata"
+    )
+
+    st.button(
+        "Show all games",
+        type="tertiary",
+        key=f"show_all_games_hltb_{position}",
+        on_click=_set_hltb_metadata_only_view,
+        args=(False,),
+    )
+
+
 def _render_gallery_pagination(
     total_results,
     current_page,
     total_pages,
     position,
     metadata_only=False,
+    hltb_metadata_only=False,
     library_df=None,
     metadata_unavailable_appids=None,
 ):
@@ -164,6 +209,11 @@ def _render_gallery_pagination(
                 total_results=total_results,
                 library_df=library_df,
                 metadata_unavailable_appids=metadata_unavailable_appids,
+            )
+        elif hltb_metadata_only:
+            _render_hltb_metadata_view_controls(
+                position=position,
+                total_results=total_results,
             )
         else:
             st.markdown(
@@ -426,6 +476,24 @@ def render_library_overview(
 
 
 def render_library(df):
+    metadata_view_param = st.query_params.get("metadata_view")
+
+    if metadata_view_param == "steam":
+        st.session_state.library_metadata_only = True
+        st.session_state.library_hltb_metadata_only = False
+        st.session_state.gallery_page = 1
+        st.session_state.library_scroll_to_top = True
+        del st.query_params["metadata_view"]
+        st.rerun()
+
+    if metadata_view_param == "hltb":
+        st.session_state.library_metadata_only = False
+        st.session_state.library_hltb_metadata_only = True
+        st.session_state.gallery_page = 1
+        st.session_state.library_scroll_to_top = True
+        del st.query_params["metadata_view"]
+        st.rerun()
+
     # Stable anchor used when switching between the normal library and the
     # metadata-unavailable view. It lives in the parent Streamlit document,
     # so the tiny component below can reliably scroll to it after a rerun.
@@ -543,6 +611,38 @@ def render_library(df):
         st.session_state.library_metadata_only
     )
 
+    hltb_metadata = get_all_hltb_metadata()
+    hltb_matched_appids = {
+        int(appid)
+        for appid, metadata in hltb_metadata.items()
+        if metadata.get("state") == "matched"
+    }
+
+    hltb_metadata_unavailable_appids = {
+        int(appid)
+        for appid in df["AppID"].tolist()
+        if int(appid) not in hltb_matched_appids
+    }
+
+    hltb_metadata_unavailable_count = int(
+        df["AppID"].isin(
+            hltb_metadata_unavailable_appids
+        ).sum()
+    )
+
+    if "library_hltb_metadata_only" not in st.session_state:
+        st.session_state.library_hltb_metadata_only = False
+
+    if (
+        st.session_state.library_hltb_metadata_only
+        and hltb_metadata_unavailable_count == 0
+    ):
+        st.session_state.library_hltb_metadata_only = False
+
+    hltb_metadata_only = bool(
+        st.session_state.library_hltb_metadata_only
+    )
+
     search_col, status_col, sort_col, order_col = st.columns(
         [2.4, 1.6, 1, 1]
     )
@@ -597,7 +697,7 @@ def render_library(df):
         if only_never_played:
             # Entering the Never played-only view gets a useful alphabetical
             # default. The user can still change it afterwards.
-            st.session_state.library_sort = "Name"
+            st.session_state.library_sort_v2 = "Name"
             st.session_state.library_order = "Ascending"
             st.session_state.library_never_played_auto_sort = True
 
@@ -610,7 +710,7 @@ def render_library(df):
         ):
             # Restore the normal library default only if the user did not
             # override the automatic Never played ordering.
-            st.session_state.library_sort = "Hours"
+            st.session_state.library_sort_v2 = "Hours Played"
             st.session_state.library_order = "Descending"
             st.session_state.library_never_played_auto_sort = False
 
@@ -622,14 +722,22 @@ def render_library(df):
 
     with sort_col:
 
+        sort_options = [
+            "Name",
+            "Hours Played",
+            "HLTB Main Story",
+            "HLTB Main + Extras",
+            "HLTB Completionist",
+            "SLT Review Score",
+        ]
+
+        if "library_sort_v2" not in st.session_state:
+            st.session_state.library_sort_v2 = "Hours Played"
+
         sort_by = st.selectbox(
             "Sort by",
-            [
-                "Hours",
-                "Name",
-                "SLT Review Score",
-            ],
-            key="library_sort"
+            sort_options,
+            key="library_sort_v2"
         )
 
     # -----------------------------------------------------
@@ -699,6 +807,13 @@ def render_library(df):
             )
         ]
 
+    if hltb_metadata_only:
+        filtered_df = filtered_df[
+            filtered_df["AppID"].isin(
+                hltb_metadata_unavailable_appids
+            )
+        ]
+
     # =====================================================
     # SORTING
     # =====================================================
@@ -708,10 +823,10 @@ def render_library(df):
     )
 
     # -----------------------------------------------------
-    # Hours
+    # Hours played
     # -----------------------------------------------------
 
-    if sort_by == "Hours":
+    if sort_by == "Hours Played":
 
         # Finished games always stay at the end
         filtered_df["Finished_sort"] = (
@@ -733,6 +848,85 @@ def render_library(df):
             )
             .drop(
                 columns=["Finished_sort"]
+            )
+        )
+
+    # -----------------------------------------------------
+    # HowLongToBeat duration
+    # -----------------------------------------------------
+
+    elif sort_by in {
+        "HLTB Main Story",
+        "HLTB Main + Extras",
+        "HLTB Completionist",
+    }:
+        duration_fallbacks = {
+            "HLTB Main Story": (
+                "main_story",
+                "main_extra",
+                "completionist",
+            ),
+            "HLTB Main + Extras": (
+                "main_extra",
+                "completionist",
+                "main_story",
+            ),
+            "HLTB Completionist": (
+                "completionist",
+                "main_extra",
+                "main_story",
+            ),
+        }[sort_by]
+
+        # HLTB sorting only reads the local SQLite cache. It never triggers
+        # requests to HowLongToBeat. If the selected duration is unavailable,
+        # use the closest available HLTB duration as a sorting fallback. The
+        # modal still shows only the real values returned by HLTB.
+        hltb_metadata = get_all_hltb_metadata()
+
+        duration_by_appid = {}
+        for appid, metadata in hltb_metadata.items():
+            if metadata.get("state") != "matched":
+                continue
+
+            for field in duration_fallbacks:
+                value = metadata.get(field)
+                if value is not None:
+                    duration_by_appid[appid] = value
+                    break
+
+        filtered_df["_HLTB_duration"] = pd.to_numeric(
+            filtered_df["AppID"].map(duration_by_appid),
+            errors="coerce",
+        )
+        filtered_df["_HLTB_missing"] = (
+            filtered_df["_HLTB_duration"].isna()
+        )
+        filtered_df["_Game_sort"] = (
+            filtered_df["Game"].str.lower()
+        )
+
+        filtered_df = (
+            filtered_df
+            .sort_values(
+                by=[
+                    "_HLTB_missing",
+                    "_HLTB_duration",
+                    "_Game_sort",
+                ],
+                ascending=[
+                    True,
+                    ascending,
+                    True,
+                ],
+                na_position="last",
+            )
+            .drop(
+                columns=[
+                    "_HLTB_duration",
+                    "_HLTB_missing",
+                    "_Game_sort",
+                ]
             )
         )
 
@@ -863,6 +1057,7 @@ def render_library(df):
         search_term,
         tuple(status_filters),
         metadata_only,
+        hltb_metadata_only,
         sort_by,
         order
     )
@@ -902,7 +1097,17 @@ def render_library(df):
             )
 
             st.info(
-                "🎮 No games without metadata match the current filters."
+                "🎮 No games without Steam metadata match the current filters."
+            )
+
+        elif hltb_metadata_only:
+            _render_hltb_metadata_view_controls(
+                position="empty",
+                total_results=0,
+            )
+
+            st.info(
+                "🎮 No games without HLTB metadata match the current filters."
             )
 
         else:
@@ -910,7 +1115,14 @@ def render_library(df):
                 "**0 games found**"
             )
 
-            if search_term and status_filters:
+            if duration_filter_active:
+                st.info(
+                    "⏳ No games with cached HowLongToBeat data match "
+                    "the selected duration. Try changing the hours or "
+                    "opening more games to cache their HLTB data."
+                )
+
+            elif search_term and status_filters:
                 st.info(
                     "🔎 No games match your search and the selected "
                     "statuses. Try changing the filters."
@@ -965,6 +1177,7 @@ def render_library(df):
         total_pages=total_pages,
         position="top",
         metadata_only=metadata_only,
+        hltb_metadata_only=hltb_metadata_only,
         library_df=df,
         metadata_unavailable_appids=metadata_unavailable_appids,
     )
@@ -1151,6 +1364,7 @@ def render_library(df):
         total_pages=total_pages,
         position="bottom",
         metadata_only=metadata_only,
+        hltb_metadata_only=hltb_metadata_only,
         library_df=df,
         metadata_unavailable_appids=metadata_unavailable_appids,
     )
@@ -1159,11 +1373,32 @@ def render_library(df):
     # Discreet metadata-unavailable view
     # -------------------------------------------------
 
-    if metadata_unavailable_count > 0 and not metadata_only:
-        st.button(
-            f"Games without metadata ({metadata_unavailable_count})",
-            type="tertiary",
-            key="show_games_without_metadata_footer",
-            on_click=_set_metadata_only_view,
-            args=(True,)
+    if (
+        not metadata_only
+        and not hltb_metadata_only
+        and (
+            metadata_unavailable_count > 0
+            or hltb_metadata_unavailable_count > 0
         )
+    ):
+        metadata_links = []
+
+        if metadata_unavailable_count > 0:
+            metadata_links.append(
+                (
+                    "[Games Without Steam Metadata "
+                    f"({metadata_unavailable_count})]"
+                    "(?metadata_view=steam)"
+                )
+            )
+
+        if hltb_metadata_unavailable_count > 0:
+            metadata_links.append(
+                (
+                    "[Games Without HLTB Metadata "
+                    f"({hltb_metadata_unavailable_count})]"
+                    "(?metadata_view=hltb)"
+                )
+            )
+
+        st.markdown(" · ".join(metadata_links))

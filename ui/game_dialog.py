@@ -1,3 +1,5 @@
+import math
+
 import streamlit as st
 
 from constants import (
@@ -9,11 +11,51 @@ from database import (
     save_game_data,
 )
 from metadata_service import get_game_metadata
+from hltb_service import get_hltb_metadata, set_manual_hltb_metadata
 from smart_pick import smart_pick
 from ui.common import (
     clear_selected_game,
     get_game_image,
 )
+
+
+def _compact_metric(label, value):
+    st.markdown(
+        f"""
+        <div class="compact-metric">
+            <div class="compact-metric-label">{label}</div>
+            <div class="compact-metric-value">{value}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _slt_review_score(positive_percentage, total_reviews):
+    """Return the 95% Wilson lower bound used by SLT Review Score."""
+    if (
+        positive_percentage is None
+        or total_reviews is None
+        or total_reviews <= 0
+    ):
+        return None
+
+    p_hat = max(0.0, min(1.0, float(positive_percentage) / 100.0))
+    n = float(total_reviews)
+    z = 1.96
+    z_squared = z * z
+
+    numerator = (
+        p_hat
+        + z_squared / (2.0 * n)
+        - z * math.sqrt(
+            (p_hat * (1.0 - p_hat) / n)
+            + z_squared / (4.0 * n * n)
+        )
+    )
+    denominator = 1.0 + z_squared / n
+
+    return (numerator / denominator) * 100.0
 
 
 @st.dialog(
@@ -28,6 +70,70 @@ def show_game_details(game, df):
     hours = float(game["Hours"])
     current_status = game["Status"]
     current_notes = game["Notes"]
+
+    st.markdown(
+        """
+        <style>
+        [data-testid="stDialog"] .compact-metric {
+            padding: 0.05rem 0 0.15rem 0;
+        }
+
+        [data-testid="stDialog"] .compact-metric-label {
+            font-size: 0.76rem;
+            line-height: 1.15;
+            opacity: 0.88;
+            margin-bottom: 0.18rem;
+        }
+
+        [data-testid="stDialog"] .compact-metric-value {
+            font-size: 1.55rem;
+            line-height: 1.08;
+            font-weight: 400;
+            letter-spacing: -0.02em;
+        }
+
+        [data-testid="stDialog"] .compact-section-title {
+            font-size: 0.91rem;
+            font-weight: 600;
+            margin: 0.2rem 0 0.35rem 0;
+        }
+
+        [data-testid="stDialog"] .compact-caption {
+            font-size: 0.74rem;
+            opacity: 0.68;
+            margin: -0.05rem 0 0.15rem 0;
+        }
+
+        [data-testid="stDialog"] .review-secondary-row {
+            font-size: 0.74rem;
+            opacity: 0.68;
+            margin: -0.05rem 0 0.15rem 0;
+        }
+
+        [data-testid="stDialog"] .section-gap {
+            height: 0.45rem;
+        }
+
+        [data-testid="stDialog"] .secondary-info {
+            font-size: 0.76rem;
+            opacity: 0.76;
+            margin: 0.1rem 0 0.1rem 0;
+        }
+
+        [data-testid="stDialog"] .technical-caption {
+            font-size: 0.69rem;
+            opacity: 0.48;
+            margin-top: 0.1rem;
+        }
+
+        [data-testid="stDialog"] hr {
+            margin-top: 0.6rem;
+            margin-bottom: 0.6rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # =====================================================
     # STEAM METADATA
@@ -106,6 +212,25 @@ def show_game_details(game, df):
     ]
 
     # =====================================================
+    # HOWLONGTOBEAT
+    # =====================================================
+
+    hltb = None
+    hltb_load_failed = False
+
+    try:
+        hltb = get_hltb_metadata(appid, game_name)
+    except Exception:
+        # HLTB is an optional third-party source. A temporary failure must
+        # never prevent the rest of the game modal from opening.
+        hltb_load_failed = True
+
+    hltb_matched = (
+        hltb is not None
+        and hltb.get("state") == "matched"
+    )
+
+    # =====================================================
     # BANNER
     # =====================================================
 
@@ -162,38 +287,153 @@ def show_game_details(game, df):
     metric_col1, metric_col2, metric_col3 = st.columns(3)
 
     with metric_col1:
-
-        st.metric(
+        _compact_metric(
             "⏱️ Playtime",
-            f"{hours:.1f} h"
+            f"{hours:.1f} h",
         )
 
     with metric_col2:
-
-        st.metric(
+        _compact_metric(
             "👍 Positive (%)",
             (
                 f"{positive_percentage:.1f}%"
                 if positive_percentage is not None
                 else "—"
-            )
+            ),
         )
 
     with metric_col3:
-
-        st.metric(
+        _compact_metric(
             "💬 Reviews",
             (
-                f"{total_reviews:,}"
-                if total_reviews
+                f"{int(total_reviews):,}"
+                if total_reviews is not None
                 else "—"
-            )
+            ),
         )
 
-    if review_description:
+    slt_score = _slt_review_score(positive_percentage, total_reviews)
 
+    if review_description or slt_score is not None:
+        review_secondary_parts = []
+        if review_description:
+            review_secondary_parts.append(f"Steam: {review_description}")
+        if slt_score is not None:
+            review_secondary_parts.append(f"SLT Score: {slt_score:.1f}%")
+
+        st.markdown(
+            f'<div class="review-secondary-row">{" · ".join(review_secondary_parts)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    if hltb_matched:
+        st.markdown(
+            '<div class="section-gap"></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="compact-section-title">⏳ HowLongToBeat</div>',
+            unsafe_allow_html=True,
+        )
+
+        hltb_col1, hltb_col2, hltb_col3 = st.columns(3)
+
+        with hltb_col1:
+            _compact_metric(
+                "Main Story",
+                (
+                    f"{hltb['main_story']:.1f} h"
+                    if hltb.get("main_story") is not None
+                    else "—"
+                ),
+            )
+
+        with hltb_col2:
+            _compact_metric(
+                "Main + Extras",
+                (
+                    f"{hltb['main_extra']:.1f} h"
+                    if hltb.get("main_extra") is not None
+                    else "—"
+                ),
+            )
+
+        with hltb_col3:
+            _compact_metric(
+                "Completionist",
+                (
+                    f"{hltb['completionist']:.1f} h"
+                    if hltb.get("completionist") is not None
+                    else "—"
+                ),
+            )
+
+    elif hltb is not None and hltb.get("state") == "no_match":
         st.caption(
-            f"Steam: {review_description}"
+            "⏳ HowLongToBeat: no reliable name match found."
+        )
+
+        with st.form(
+            f"hltb_manual_match_{appid}",
+            border=False,
+        ):
+            manual_id_col, manual_button_col = st.columns(
+                [3, 1],
+                vertical_alignment="bottom",
+            )
+
+            with manual_id_col:
+                manual_hltb_id = st.text_input(
+                    "HLTB ID",
+                    placeholder="e.g. 3126",
+                    key=f"hltb_manual_id_{appid}",
+                )
+
+            with manual_button_col:
+                use_manual_hltb_id = st.form_submit_button(
+                    "Use HLTB ID",
+                    use_container_width=True,
+                )
+
+            if use_manual_hltb_id:
+                try:
+                    manual_hltb_id = manual_hltb_id.strip()
+
+                    if not manual_hltb_id:
+                        raise ValueError("Enter an HLTB ID.")
+
+                    set_manual_hltb_metadata(
+                        appid=appid,
+                        game_name=game_name,
+                        hltb_id=manual_hltb_id,
+                    )
+
+                except ValueError as error:
+                    st.error(str(error))
+
+                except RuntimeError:
+                    st.error(
+                        "Could not load that HLTB ID. "
+                        "Check the ID and try again."
+                    )
+
+                except Exception:
+                    st.error(
+                        "HowLongToBeat could not be reached at the moment."
+                    )
+
+                else:
+                    st.rerun()
+
+    elif hltb_load_failed:
+        st.caption(
+            "⚠️ HowLongToBeat data could not be loaded at the moment."
+        )
+
+    if hltb_matched:
+        st.markdown(
+            '<div class="section-gap"></div>',
+            unsafe_allow_html=True,
         )
 
     if metadata_unavailable:
@@ -221,7 +461,8 @@ def show_game_details(game, df):
     with metadata_col1:
 
         st.markdown(
-            "**🎭 Genres**"
+            '<div class="compact-section-title">🎭 Genres</div>',
+            unsafe_allow_html=True,
         )
 
         if genres:
@@ -239,7 +480,8 @@ def show_game_details(game, df):
     with metadata_col2:
 
         st.markdown(
-            "**🎮 Modes**"
+            '<div class="compact-section-title">🎮 Modes</div>',
+            unsafe_allow_html=True,
         )
 
         if relevant_categories:
@@ -278,10 +520,9 @@ def show_game_details(game, df):
 
     if secondary_info:
 
-        st.caption(
-            " · ".join(
-                secondary_info
-            )
+        st.markdown(
+            f'<div class="secondary-info">{" · ".join(secondary_info)}</div>',
+            unsafe_allow_html=True,
         )
 
     # =====================================================
@@ -377,6 +618,21 @@ def show_game_details(game, df):
                         smart_pick_context[
                             "min_positive_percentage"
                         ]
+                    ),
+                    hltb_duration_type=(
+                        smart_pick_context.get(
+                            "hltb_duration_type"
+                        )
+                    ),
+                    min_hltb_hours=(
+                        smart_pick_context.get(
+                            "min_hltb_hours"
+                        )
+                    ),
+                    max_hltb_hours=(
+                        smart_pick_context.get(
+                            "max_hltb_hours"
+                        )
                     ),
                 )
 
@@ -499,8 +755,9 @@ def show_game_details(game, df):
             width="stretch"
         )
 
-    st.caption(
-        f"Steam AppID: {appid}"
+    st.markdown(
+        f'<div class="technical-caption">Steam AppID: {appid}</div>',
+        unsafe_allow_html=True,
     )
 
 

@@ -14,6 +14,10 @@ from metadata_background import (
     start_metadata_background_refresh,
     stop_metadata_background_refresh,
 )
+from hltb_background import (
+    start_hltb_background_refresh,
+    stop_hltb_background_refresh,
+)
 from steam_cache import (
     load_games,
     load_player_summary,
@@ -253,6 +257,7 @@ if (
 
 if not settings_configured:
     stop_metadata_background_refresh()
+    stop_hltb_background_refresh()
     render_onboarding()
     st.stop()
 
@@ -306,11 +311,13 @@ try:
     )
 except Exception as error:
     stop_metadata_background_refresh()
+    stop_hltb_background_refresh()
     show_library_load_error(error)
     st.stop()
 
 if not games:
     stop_metadata_background_refresh()
+    stop_hltb_background_refresh()
     st.warning(
         "🎮 No games were found in this library."
     )
@@ -386,8 +393,17 @@ df = pd.DataFrame(data)
 # Populate/refresh Steam Store metadata gently in the background.
 # The worker uses only SQLite/network calls, never Streamlit UI calls, so
 # normal interaction and Smart Pick remain responsive.
+library_records = df.to_dict("records")
+
 start_metadata_background_refresh(
-    df.to_dict("records")
+    library_records
+)
+
+# Populate/refresh HowLongToBeat metadata independently from the Steam
+# metadata worker. One cache being complete must never prevent the other
+# worker from running.
+start_hltb_background_refresh(
+    library_records
 )
 
 show_selected_game_dialog(df)

@@ -6,7 +6,7 @@ from constants import (
     STATUS_PLAYING,
     STATUS_UNPLAYED,
 )
-from database import get_all_game_metadata
+from database import get_all_game_metadata, get_all_hltb_metadata
 
 
 # =========================================================
@@ -54,6 +54,80 @@ def matches_category(metadata, category):
         category in item.lower()
         for item in categories
     )
+
+
+def get_hltb_duration(metadata, duration_type):
+    """Return the requested cached HLTB duration, with sensible fallbacks."""
+
+    if not metadata or metadata.get("state") != "matched":
+        return None
+
+    fallback_order = {
+        "main_story": [
+            "main_story",
+            "main_extra",
+            "completionist",
+        ],
+        "main_extra": [
+            "main_extra",
+            "completionist",
+            "main_story",
+        ],
+        "completionist": [
+            "completionist",
+            "main_extra",
+            "main_story",
+        ],
+    }
+
+    for field in fallback_order.get(duration_type, []):
+        value = metadata.get(field)
+
+        if value is None:
+            continue
+
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+
+        if value >= 0:
+            return value
+
+    return None
+
+
+def matches_hltb_duration(
+    metadata,
+    duration_type,
+    min_hours=None,
+    max_hours=None,
+):
+    """Filter by cached HLTB duration without making network requests."""
+
+    # Merely choosing a duration type does not filter anything until the user
+    # actually sets a minimum or maximum.
+    if (
+        duration_type is None
+        or (min_hours is None and max_hours is None)
+    ):
+        return True
+
+    duration = get_hltb_duration(
+        metadata,
+        duration_type,
+    )
+
+    if duration is None:
+        return False
+
+    if min_hours is not None and duration < min_hours:
+        return False
+
+    if max_hours is not None and duration > max_hours:
+        return False
+
+    return True
 
 
 def matches_review_score(
@@ -234,6 +308,9 @@ def smart_pick(
     genre=None,
     category=None,
     min_positive_percentage=None,
+    hltb_duration_type=None,
+    min_hltb_hours=None,
+    max_hltb_hours=None,
 ):
     """Select a game using weighted random selection.
 
@@ -241,8 +318,9 @@ def smart_pick(
     do not require metadata, every eligible game can participate, including
     games whose metadata is still missing or marked Possibly delisted.
 
-    Metadata becomes mandatory only when the user selects a genre, game mode
-    or minimum review score.
+    Steam metadata becomes mandatory only when the user selects a genre,
+    game mode or minimum review score. HLTB metadata becomes mandatory only
+    when the user actually sets a minimum or maximum HLTB duration.
     """
 
     eligible_games = [
@@ -258,9 +336,12 @@ def smart_pick(
             "inspected_count": 0,
             "matched_count": 0,
             "metadata_required": False,
+            "hltb_required": False,
+            "hltb_inspected_count": 0,
         }
 
     cached_metadata = get_all_game_metadata()
+    cached_hltb_metadata = get_all_hltb_metadata()
 
     metadata_required = any([
         genre is not None,
@@ -268,10 +349,29 @@ def smart_pick(
         min_positive_percentage is not None,
     ])
 
+    hltb_required = (
+        hltb_duration_type is not None
+        and (
+            min_hltb_hours is not None
+            or max_hltb_hours is not None
+        )
+    )
+
     games_with_metadata_count = sum(
         1
         for game in eligible_games
         if int(game["AppID"]) in cached_metadata
+    )
+
+    games_with_hltb_count = sum(
+        1
+        for game in eligible_games
+        if (
+            int(game["AppID"]) in cached_hltb_metadata
+            and cached_hltb_metadata[
+                int(game["AppID"])
+            ].get("state") == "matched"
+        )
     )
 
     candidates = []
@@ -296,6 +396,16 @@ def smart_pick(
         if not matches_review_score(
             metadata_for_scoring,
             min_positive_percentage,
+        ):
+            continue
+
+        hltb_metadata = cached_hltb_metadata.get(appid)
+
+        if not matches_hltb_duration(
+            hltb_metadata,
+            hltb_duration_type,
+            min_hltb_hours,
+            max_hltb_hours,
         ):
             continue
 
@@ -332,6 +442,12 @@ def smart_pick(
             ),
             "matched_count": 0,
             "metadata_required": metadata_required,
+            "hltb_required": hltb_required,
+            "hltb_inspected_count": (
+                games_with_hltb_count
+                if hltb_required
+                else len(eligible_games)
+            ),
         }
 
     weights = [
@@ -355,5 +471,11 @@ def smart_pick(
         ),
         "matched_count": len(candidates),
         "metadata_required": metadata_required,
+        "hltb_required": hltb_required,
+        "hltb_inspected_count": (
+            games_with_hltb_count
+            if hltb_required
+            else len(eligible_games)
+        ),
     }
 

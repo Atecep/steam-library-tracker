@@ -59,6 +59,44 @@ def init_database():
             )
         """)
 
+        # HowLongToBeat data is cached independently from Steam metadata.
+        # We also cache a no_match state so opening the same modal does not
+        # repeatedly query HLTB for titles that cannot be matched safely.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS hltb_metadata (
+                appid INTEGER PRIMARY KEY,
+                searched_name TEXT NOT NULL,
+                state TEXT NOT NULL,
+                hltb_id INTEGER,
+                matched_name TEXT,
+                similarity REAL,
+                match_confidence TEXT,
+                matcher_version INTEGER,
+                main_story REAL,
+                main_extra REAL,
+                completionist REAL,
+                all_styles REAL,
+                web_link TEXT,
+                fetched_at TEXT NOT NULL
+            )
+        """)
+
+        # Add newer HLTB matcher fields to databases created by older app versions.
+        hltb_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(hltb_metadata)").fetchall()
+        }
+
+        if "match_confidence" not in hltb_columns:
+            conn.execute(
+                "ALTER TABLE hltb_metadata ADD COLUMN match_confidence TEXT"
+            )
+
+        if "matcher_version" not in hltb_columns:
+            conn.execute(
+                "ALTER TABLE hltb_metadata ADD COLUMN matcher_version INTEGER"
+            )
+
         # Migrate the old experimental label to the more accurate state name.
         conn.execute("""
             UPDATE metadata_fetch_status
@@ -480,3 +518,153 @@ def get_metadata_unavailable_appids():
 
     return {int(row[0]) for row in rows}
 
+
+
+def get_hltb_metadata(appid):
+    """Return cached HowLongToBeat data for one Steam AppID."""
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                searched_name,
+                state,
+                hltb_id,
+                matched_name,
+                similarity,
+                match_confidence,
+                matcher_version,
+                main_story,
+                main_extra,
+                completionist,
+                all_styles,
+                web_link,
+                fetched_at
+            FROM hltb_metadata
+            WHERE appid = ?
+            """,
+            (int(appid),),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "appid": int(appid),
+        "searched_name": row[0],
+        "state": row[1],
+        "hltb_id": row[2],
+        "matched_name": row[3],
+        "similarity": row[4],
+        "match_confidence": row[5],
+        "matcher_version": row[6],
+        "main_story": row[7],
+        "main_extra": row[8],
+        "completionist": row[9],
+        "all_styles": row[10],
+        "web_link": row[11],
+        "fetched_at": row[12],
+    }
+
+
+def get_all_hltb_metadata():
+    """Return all cached HowLongToBeat metadata keyed by Steam AppID.
+
+    This is intentionally a single bulk SQLite read so library filters can use
+    cached HLTB durations without issuing one database query per game and,
+    importantly, without triggering any external HLTB requests.
+    """
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                appid,
+                searched_name,
+                state,
+                hltb_id,
+                matched_name,
+                similarity,
+                match_confidence,
+                matcher_version,
+                main_story,
+                main_extra,
+                completionist,
+                all_styles,
+                web_link,
+                fetched_at
+            FROM hltb_metadata
+            """
+        ).fetchall()
+
+    return {
+        int(row[0]): {
+            "appid": int(row[0]),
+            "searched_name": row[1],
+            "state": row[2],
+            "hltb_id": row[3],
+            "matched_name": row[4],
+            "similarity": row[5],
+            "match_confidence": row[6],
+            "matcher_version": row[7],
+            "main_story": row[8],
+            "main_extra": row[9],
+            "completionist": row[10],
+            "all_styles": row[11],
+            "web_link": row[12],
+            "fetched_at": row[13],
+        }
+        for row in rows
+    }
+
+
+def save_hltb_metadata(
+    appid,
+    searched_name,
+    state,
+    hltb_id=None,
+    matched_name=None,
+    similarity=None,
+    match_confidence=None,
+    matcher_version=None,
+    main_story=None,
+    main_extra=None,
+    completionist=None,
+    all_styles=None,
+    web_link=None,
+):
+    """Persist a successful HLTB match or a cached no-match result."""
+
+    fetched_at = datetime.now().isoformat(timespec="seconds")
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO hltb_metadata (
+                appid, searched_name, state, hltb_id, matched_name,
+                similarity, match_confidence, matcher_version, main_story,
+                main_extra, completionist, all_styles, web_link, fetched_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(appid)
+            DO UPDATE SET
+                searched_name = excluded.searched_name,
+                state = excluded.state,
+                hltb_id = excluded.hltb_id,
+                matched_name = excluded.matched_name,
+                similarity = excluded.similarity,
+                match_confidence = excluded.match_confidence,
+                matcher_version = excluded.matcher_version,
+                main_story = excluded.main_story,
+                main_extra = excluded.main_extra,
+                completionist = excluded.completionist,
+                all_styles = excluded.all_styles,
+                web_link = excluded.web_link,
+                fetched_at = excluded.fetched_at
+            """,
+            (
+                int(appid), searched_name, state, hltb_id, matched_name,
+                similarity, match_confidence, matcher_version, main_story,
+                main_extra, completionist, all_styles, web_link, fetched_at,
+            ),
+        )

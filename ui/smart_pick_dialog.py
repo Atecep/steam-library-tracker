@@ -71,6 +71,58 @@ def show_smart_pick(df):
             key="smart_pick_reviews"
         )
 
+    st.write("")
+
+    smart_hltb_duration = st.selectbox(
+        "HLTB Duration",
+        [
+            "Main Story",
+            "Main + Extras",
+            "Completionist",
+        ],
+        index=None,
+        placeholder="No duration filter",
+        key="smart_pick_hltb_duration",
+    )
+
+    min_hltb_hours = None
+    max_hltb_hours = None
+
+    if smart_hltb_duration is not None:
+        duration_col1, duration_col2 = st.columns(2)
+
+        with duration_col1:
+            min_hltb_hours = st.number_input(
+                "Min hours",
+                min_value=0.0,
+                value=None,
+                step=1.0,
+                placeholder="No minimum",
+                key="smart_pick_hltb_min_hours",
+            )
+
+        with duration_col2:
+            max_hltb_hours = st.number_input(
+                "Max hours",
+                min_value=0.0,
+                value=None,
+                step=1.0,
+                placeholder="No maximum",
+                key="smart_pick_hltb_max_hours",
+            )
+
+    hltb_duration_mapping = {
+        "Main Story": "main_story",
+        "Main + Extras": "main_extra",
+        "Completionist": "completionist",
+    }
+
+    hltb_duration_type = (
+        hltb_duration_mapping.get(
+            smart_hltb_duration
+        )
+    )
+
     review_mapping = {
         "Any": None,
         "70%+": 70,
@@ -103,6 +155,16 @@ def show_smart_pick(df):
         key="run_smart_pick"
     ):
 
+        if (
+            min_hltb_hours is not None
+            and max_hltb_hours is not None
+            and min_hltb_hours > max_hltb_hours
+        ):
+            st.error(
+                "Min hours cannot be greater than Max hours."
+            )
+            return
+
         effective_statuses = (
             smart_statuses
             if smart_statuses
@@ -121,6 +183,9 @@ def show_smart_pick(df):
                 genre=genre_filter,
                 category=category_filter,
                 min_positive_percentage=minimum_reviews,
+                hltb_duration_type=hltb_duration_type,
+                min_hltb_hours=min_hltb_hours,
+                max_hltb_hours=max_hltb_hours,
             )
 
         selected_game = result.get(
@@ -146,8 +211,15 @@ def show_smart_pick(df):
                     st.caption(
                         f"{result['inspected_count']} of "
                         f"{result['eligible_count']} "
-                        "eligible games currently have cached metadata "
+                        "eligible games currently have cached Steam metadata "
                         "for metadata-based filtering."
+                    )
+
+                if result.get("hltb_required"):
+                    st.caption(
+                        f"{result['hltb_inspected_count']} of "
+                        f"{result['eligible_count']} "
+                        "eligible games currently have matched HLTB metadata."
                     )
 
         else:
@@ -163,6 +235,9 @@ def show_smart_pick(df):
                 "genre": genre_filter,
                 "category": category_filter,
                 "min_positive_percentage": minimum_reviews,
+                "hltb_duration_type": hltb_duration_type,
+                "min_hltb_hours": min_hltb_hours,
+                "max_hltb_hours": max_hltb_hours,
             }
 
             st.session_state.smart_pick_history = [
