@@ -13,8 +13,8 @@ on:
         default: "100"
 
   schedule:
-    # Daily at 02:17 UTC. Non-round minute avoids the busiest cron boundary.
-    - cron: "17 2,6,10,14,18,22 * * *"
+    # Bootstrap phase: run every 4 hours at minute 12.
+    - cron: "12 0,4,8,12,16,20 * * *"
 
 permissions:
   contents: write
