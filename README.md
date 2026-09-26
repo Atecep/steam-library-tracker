@@ -2,7 +2,7 @@
 
 A lightweight desktop app for organising, tracking and exploring your Steam library.
 
-Steam Library Tracker runs locally on your computer and uses the Steam Web API to load your games and playtime. The interface is served locally by Streamlit and opens in your default web browser. Personal statuses, notes and cached metadata are stored locally.
+Steam Library Tracker runs locally on your computer and uses the Steam Web API to load your games and playtime. Personal statuses, notes and cached metadata are stored locally.
 
 ## Features
 
@@ -13,10 +13,23 @@ Steam Library Tracker runs locally on your computer and uses the Steam Web API t
   - Playing
   - Finished
 - Add personal notes to games
-- Browse and filter your library
-- Sort games using **SLT Review Score**, which uses a 95% Wilson confidence score to balance positive review percentage with the number of reviews and avoid over-ranking very small samples
+- Browse, search, filter and sort your library
+- View cached Steam Store metadata, including genres, categories, developers, publishers and reviews
+- View **HowLongToBeat** estimates for:
+  - Main Story
+  - Main + Extras
+  - Completionist
+- Manually assign a HowLongToBeat ID when an automatic match is unavailable
+- Sort your library by HowLongToBeat duration
 - Use **Smart Pick** when you do not know what to play
-- Fetch and cache Steam Store metadata
+  - Filter by status
+  - Filter by genre and game mode
+  - Filter by Steam review score
+  - Filter by HowLongToBeat duration
+- Use **SLT Review Score**, based on Steam review data, for more useful review-based sorting
+- Refresh Steam and HowLongToBeat metadata in the background
+- Quickly inspect games without Steam or HowLongToBeat metadata
+- Export and restore your local library backup
 - Local persistent storage
 - Single-instance launcher with automatic recovery
 - Update notifications through GitHub Releases
@@ -44,7 +57,7 @@ No Python installation is required.
 2. Extract it:
 
 ```bash
-tar -xf SteamLibraryTracker-v1.2.0-linux-x86_64.tar.xz
+tar -xf SteamLibraryTracker-v1.3.0-linux-x86_64.tar.xz
 ```
 
 3. Enter the extracted directory and run:
@@ -71,6 +84,24 @@ You will need:
 - a Steam Web API key
 - your SteamID64
 
+After your library is loaded, Steam Store and HowLongToBeat metadata are cached locally and can continue to update in the background.
+
+## Smart Pick
+
+**Smart Pick** helps choose a game from your library while respecting the filters you select.
+
+Filters can include status, genre, game mode, Steam review score and HowLongToBeat duration. Games without metadata remain eligible when the selected filters do not require that metadata.
+
+You can reroll a suggestion while keeping the same filters.
+
+## HowLongToBeat
+
+Steam Library Tracker can match games in your Steam library with HowLongToBeat and cache available completion-time estimates locally.
+
+Automatic matching is intentionally conservative to reduce incorrect matches. If no reliable match is found, you can enter the game's HowLongToBeat ID manually from the game details window.
+
+HowLongToBeat data is used for display, library sorting and optional Smart Pick duration filters.
+
 ## Local data
 
 Steam Library Tracker stores user data outside the application folder so updates do not overwrite your settings, statuses or notes.
@@ -94,6 +125,14 @@ config.json
 library.db
 ```
 
+Your local database contains personal game statuses and notes together with cached Steam and HowLongToBeat metadata.
+
+## Backup and restore
+
+Your local library database can be exported as a backup and restored later from within the app.
+
+This is useful when moving to another computer or before making changes to your local installation.
+
 ## Updates
 
 Steam Library Tracker can check GitHub Releases for newer versions.
@@ -106,12 +145,14 @@ Steam Library Tracker is a local desktop application.
 
 Personal notes, statuses, configuration and cached library data remain on your computer unless you explicitly export or share them.
 
+Steam and HowLongToBeat requests are used only to retrieve the metadata required by the app.
+
 ## Development
 
 For instructions on running or building Steam Library Tracker from source, see [BUILDING.md](BUILDING.md).
 
 ## Disclaimer
 
-Steam Library Tracker is an independent project and is not affiliated with or endorsed by Valve Corporation.
+Steam Library Tracker is an independent project and is not affiliated with or endorsed by Valve Corporation or HowLongToBeat.
 
 Steam and the Steam logo are trademarks and/or registered trademarks of Valve Corporation.
