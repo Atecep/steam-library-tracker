@@ -14,7 +14,7 @@ on:
 
   schedule:
     # Daily at 02:17 UTC. Non-round minute avoids the busiest cron boundary.
-    - cron: "17 2 * * *"
+    - cron: "17 2,6,10,14,18,22 * * *"
 
 permissions:
   contents: write
