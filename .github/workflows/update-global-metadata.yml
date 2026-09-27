@@ -13,8 +13,8 @@ on:
         default: "100"
 
   schedule:
-    # Bootstrap phase: run every 4 hours at minute 12.
-    - cron: "12 0,4,8,12,16,20 * * *"
+    # Bootstrap phase: run every 2 hours at minute 12.
+    - cron: "12 0,2,4,6,8,10,12,14,16,18,20,22 * * *"
 
 permissions:
   contents: write
