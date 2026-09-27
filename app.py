@@ -210,16 +210,23 @@ with header_col2:
                 ] = True
 
     with avatar_col:
-        if (
-            settings_configured
-            and player is not None
-        ):
-            if st.button(
-                "Steam account",
-                key="open_steam_account",
-                help="Steam account"
-            ):
-                st.session_state.open_steam_account_dialog = True
+        if settings_configured:
+            if player is not None:
+                if st.button(
+                    "Steam account",
+                    key="open_steam_account",
+                    help="Steam account"
+                ):
+                    st.session_state.open_steam_account_dialog = True
+            else:
+                if st.button(
+                    "⚙️",
+                    key="open_steam_settings_recovery",
+                    help="Steam account settings"
+                ):
+                    st.session_state.steam_menu_view = "settings"
+                    st.session_state.open_steam_account_dialog = True
+                    st.rerun()
 
 
 update_info = get_update_info()
@@ -236,15 +243,12 @@ if update_info is not None:
 # STEAM ACCOUNT MENU
 # =========================================================
 
-if (
-    st.session_state.get(
-        "open_steam_account_dialog",
-        False
-    )
-    and player is not None
+if st.session_state.get(
+    "open_steam_account_dialog",
+    False
 ):
     show_steam_account(
-        player=player,
+        player=player or {},
         steam_profile=steam_profile,
         steam_id=steam_id,
         steam_api_key=steam_api_key
@@ -313,6 +317,15 @@ except Exception as error:
     stop_metadata_background_refresh()
     stop_hltb_background_refresh()
     show_library_load_error(error)
+
+    if st.button(
+        "⚙️ Change Steam settings",
+        key="change_steam_settings_after_load_error"
+    ):
+        st.session_state.steam_menu_view = "settings"
+        st.session_state.open_steam_account_dialog = True
+        st.rerun()
+
     st.stop()
 
 if not games:
@@ -327,12 +340,26 @@ if not games:
         "are visible, then try refreshing the library."
     )
 
-    if st.button(
-        "🔄 Try again",
-        key="retry_empty_library"
-    ):
-        load_games.clear()
-        st.rerun()
+    retry_col, settings_col = st.columns(2)
+
+    with retry_col:
+        if st.button(
+            "🔄 Try again",
+            key="retry_empty_library",
+            width="stretch"
+        ):
+            load_games.clear()
+            st.rerun()
+
+    with settings_col:
+        if st.button(
+            "⚙️ Change Steam settings",
+            key="change_steam_settings_empty_library",
+            width="stretch"
+        ):
+            st.session_state.steam_menu_view = "settings"
+            st.session_state.open_steam_account_dialog = True
+            st.rerun()
 
     st.stop()
 

@@ -19,6 +19,7 @@ project_hiddenimports = [
     "constants",
     "database",
     "hltb_service",
+    "hltb_background",
     "metadata_service",
     "metadata_background",
     "settings",
