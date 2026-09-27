@@ -1115,14 +1115,7 @@ def render_library(df):
                 "**0 games found**"
             )
 
-            if duration_filter_active:
-                st.info(
-                    "⏳ No games with cached HowLongToBeat data match "
-                    "the selected duration. Try changing the hours or "
-                    "opening more games to cache their HLTB data."
-                )
-
-            elif search_term and status_filters:
+            if search_term and status_filters:
                 st.info(
                     "🔎 No games match your search and the selected "
                     "statuses. Try changing the filters."
