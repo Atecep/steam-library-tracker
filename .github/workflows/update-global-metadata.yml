@@ -62,7 +62,7 @@ jobs:
             echo "STEAM_LIMIT=${{ inputs.steam_limit }}" >> "$GITHUB_ENV"
             echo "HLTB_LIMIT=${{ inputs.hltb_limit }}" >> "$GITHUB_ENV"
           else
-            echo "STEAM_LIMIT=2300" >> "$GITHUB_ENV"
+            echo "STEAM_LIMIT=2450" >> "$GITHUB_ENV"
             echo "HLTB_LIMIT=1750" >> "$GITHUB_ENV"
           fi
 
