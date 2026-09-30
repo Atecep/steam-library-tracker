@@ -51,9 +51,20 @@ jobs:
       - name: Prepare database directory
         run: mkdir -p global_metadata/data
 
-      - name: Download current global database
+      - name: Download and verify current global database
         run: |
-          gh release download global-db             --pattern "global_metadata.db"             --dir global_metadata/data             --clobber
+          gh release download global-db \
+            --pattern "global_metadata.db" \
+            --dir global_metadata/data \
+            --clobber
+
+          gh release download global-db \
+            --pattern "global_metadata.db.sha256" \
+            --dir global_metadata/data \
+            --clobber
+
+          cd global_metadata/data
+          sha256sum -c global_metadata.db.sha256
 
       - name: Select batch sizes
         shell: bash
@@ -68,7 +79,9 @@ jobs:
 
       - name: Update global metadata
         run: |
-          python global_metadata/build_global_database.py             --steam-limit "$STEAM_LIMIT"             --hltb-limit "$HLTB_LIMIT"
+          python global_metadata/build_global_database.py \
+            --steam-limit "$STEAM_LIMIT" \
+            --hltb-limit "$HLTB_LIMIT"
 
       - name: Checkpoint and verify SQLite database
         run: |
@@ -88,43 +101,299 @@ jobs:
           print("SQLite integrity check: ok")
           PY
 
-      - name: Create checksum
+      - name: Create checksum and temporary assets
         run: |
           cd global_metadata/data
-          sha256sum global_metadata.db > global_metadata.db.sha256
 
-      - name: Save recovery artifact
+          sha256sum global_metadata.db > global_metadata.db.sha256
+          sha256sum -c global_metadata.db.sha256
+
+          cp global_metadata.db global_metadata.db.next
+          cp global_metadata.db.sha256 global_metadata.db.sha256.next
+
+      - name: Publish updated database safely
+        id: publish
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          RELEASE_TAG="global-db"
+          API_RELEASE="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          API_ASSETS="repos/${GITHUB_REPOSITORY}/releases/assets"
+          DATA_DIR="global_metadata/data"
+
+          DB_NAME="global_metadata.db"
+          SHA_NAME="global_metadata.db.sha256"
+          NEXT_DB_NAME="global_metadata.db.next"
+          NEXT_SHA_NAME="global_metadata.db.sha256.next"
+          PREV_DB_NAME="global_metadata.db.prev"
+          PREV_SHA_NAME="global_metadata.db.sha256.prev"
+
+          asset_id() {
+            local name="$1"
+            gh api "$API_RELEASE" \
+              --jq ".assets[] | select(.name == \"${name}\") | .id" \
+              | head -n 1
+          }
+
+          retry_command() {
+            local description="$1"
+            shift
+
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              echo "${description} - attempt ${attempt}/5"
+
+              if "$@"; then
+                return 0
+              fi
+
+              if [[ "$attempt" -lt 5 ]]; then
+                local wait_seconds=$((attempt * 20))
+                echo "Failed. Retrying in ${wait_seconds}s..."
+                sleep "$wait_seconds"
+              fi
+            done
+
+            echo "::error::${description} failed after 5 attempts."
+            return 1
+          }
+
+          delete_asset_id() {
+            local id="$1"
+            local description="$2"
+
+            if [[ -z "$id" ]]; then
+              return 0
+            fi
+
+            retry_command "$description" \
+              gh api --method DELETE "${API_ASSETS}/${id}"
+          }
+
+          delete_asset_name() {
+            local name="$1"
+            local id
+
+            id="$(asset_id "$name" || true)"
+
+            if [[ -n "$id" ]]; then
+              delete_asset_id "$id" "Delete stale asset ${name}"
+            fi
+          }
+
+          rename_asset() {
+            local id="$1"
+            local new_name="$2"
+
+            retry_command "Rename asset to ${new_name}" \
+              gh api --method PATCH "${API_ASSETS}/${id}" \
+                -f "name=${new_name}"
+          }
+
+          upload_asset() {
+            local path="$1"
+            local name
+            name="$(basename "$path")"
+
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              echo "Upload ${name} - attempt ${attempt}/5"
+
+              if gh release upload "$RELEASE_TAG" "$path"; then
+                return 0
+              fi
+
+              # A failed request can occasionally leave a remote asset behind.
+              # Because this is only a temporary .next asset, remove it before
+              # retrying. The official database is never touched here.
+              local stale_id
+              stale_id="$(asset_id "$name" || true)"
+
+              if [[ -n "$stale_id" ]]; then
+                delete_asset_id \
+                  "$stale_id" \
+                  "Remove incomplete temporary asset ${name}" || true
+              fi
+
+              if [[ "$attempt" -lt 5 ]]; then
+                local wait_seconds=$((attempt * 20))
+                echo "Upload failed. Retrying in ${wait_seconds}s..."
+                sleep "$wait_seconds"
+              fi
+            done
+
+            echo "::error::Upload ${name} failed after 5 attempts."
+            return 1
+          }
+
+          verify_uploaded_asset() {
+            local id="$1"
+            local local_path="$2"
+            local description="$3"
+
+            local state
+            local remote_size
+            local remote_digest
+            local local_size
+            local local_digest
+
+            state="$(gh api "${API_ASSETS}/${id}" --jq '.state')"
+            remote_size="$(gh api "${API_ASSETS}/${id}" --jq '.size')"
+            remote_digest="$(gh api "${API_ASSETS}/${id}" --jq '.digest // ""')"
+
+            local_size="$(stat -c%s "$local_path")"
+            local_digest="sha256:$(sha256sum "$local_path" | awk '{print $1}')"
+
+            if [[ "$state" != "uploaded" ]]; then
+              echo "::error::${description} is not in uploaded state."
+              return 1
+            fi
+
+            if [[ "$remote_size" != "$local_size" ]]; then
+              echo "::error::${description} size mismatch."
+              return 1
+            fi
+
+            if [[ -z "$remote_digest" || "$remote_digest" != "$local_digest" ]]; then
+              echo "::error::${description} SHA-256 digest mismatch."
+              return 1
+            fi
+
+            echo "${description} verified."
+          }
+
+          rollback() {
+            echo "::warning::Publication failed during promotion. Rolling back..."
+
+            local rollback_ok=1
+
+            # Remove the new assets first, regardless of whether they are still
+            # named .next or have already been promoted to the official names.
+            if ! delete_asset_id \
+              "$NEXT_DB_ID" \
+              "Remove new database during rollback"; then
+              rollback_ok=0
+            fi
+
+            if ! delete_asset_id \
+              "$NEXT_SHA_ID" \
+              "Remove new checksum during rollback"; then
+              rollback_ok=0
+            fi
+
+            # Restore the previous known-good assets to their official names.
+            if ! rename_asset "$CURRENT_DB_ID" "$DB_NAME"; then
+              rollback_ok=0
+            fi
+
+            if ! rename_asset "$CURRENT_SHA_ID" "$SHA_NAME"; then
+              rollback_ok=0
+            fi
+
+            if [[ "$rollback_ok" -eq 1 ]]; then
+              echo "Rollback completed. Previous global database restored."
+            else
+              echo "::error::Rollback was not fully successful."
+              echo "::error::Use the recovery artifact from this run for manual recovery."
+            fi
+          }
+
+          echo "Checking current release assets..."
+
+          CURRENT_DB_ID="$(asset_id "$DB_NAME" || true)"
+          CURRENT_SHA_ID="$(asset_id "$SHA_NAME" || true)"
+
+          if [[ -z "$CURRENT_DB_ID" || -z "$CURRENT_SHA_ID" ]]; then
+            echo "::error::The official database or checksum is missing."
+            echo "::error::Refusing to publish over an incomplete release."
+            exit 1
+          fi
+
+          # The official pair exists and was already downloaded and checksum-
+          # verified earlier in the job, so stale temporary assets are safe to
+          # remove before beginning a new transaction.
+          delete_asset_name "$NEXT_DB_NAME"
+          delete_asset_name "$NEXT_SHA_NAME"
+          delete_asset_name "$PREV_DB_NAME"
+          delete_asset_name "$PREV_SHA_NAME"
+
+          echo "Uploading new database under temporary .next names..."
+
+          upload_asset "${DATA_DIR}/${NEXT_DB_NAME}"
+          upload_asset "${DATA_DIR}/${NEXT_SHA_NAME}"
+
+          NEXT_DB_ID="$(asset_id "$NEXT_DB_NAME" || true)"
+          NEXT_SHA_ID="$(asset_id "$NEXT_SHA_NAME" || true)"
+
+          if [[ -z "$NEXT_DB_ID" || -z "$NEXT_SHA_ID" ]]; then
+            echo "::error::Temporary assets could not be located after upload."
+            exit 1
+          fi
+
+          echo "Verifying uploaded temporary assets..."
+
+          verify_uploaded_asset \
+            "$NEXT_DB_ID" \
+            "${DATA_DIR}/${NEXT_DB_NAME}" \
+            "Temporary database"
+
+          verify_uploaded_asset \
+            "$NEXT_SHA_ID" \
+            "${DATA_DIR}/${NEXT_SHA_NAME}" \
+            "Temporary checksum"
+
+          echo "Temporary assets are complete and verified."
+          echo "Promoting the new database..."
+
+          # Move the old checksum out of the official name first. If anything
+          # after this point fails, rollback() restores the previous pair.
+          if ! rename_asset "$CURRENT_SHA_ID" "$PREV_SHA_NAME"; then
+            rollback
+            exit 1
+          fi
+
+          if ! rename_asset "$CURRENT_DB_ID" "$PREV_DB_NAME"; then
+            rollback
+            exit 1
+          fi
+
+          if ! rename_asset "$NEXT_DB_ID" "$DB_NAME"; then
+            rollback
+            exit 1
+          fi
+
+          if ! rename_asset "$NEXT_SHA_ID" "$SHA_NAME"; then
+            rollback
+            exit 1
+          fi
+
+          echo "New database promoted successfully."
+
+          # The new official pair is now live. Old .prev assets are no longer
+          # required. Cleanup failure is non-fatal because the next run will
+          # remove stale .prev assets before publishing again.
+          if ! delete_asset_id \
+            "$CURRENT_DB_ID" \
+            "Delete previous database asset"; then
+            echo "::warning::Could not delete ${PREV_DB_NAME}; leaving it for the next run."
+          fi
+
+          if ! delete_asset_id \
+            "$CURRENT_SHA_ID" \
+            "Delete previous checksum asset"; then
+            echo "::warning::Could not delete ${PREV_SHA_NAME}; leaving it for the next run."
+          fi
+
+          echo "Safe publication complete."
+
+      - name: Save recovery artifact after publication failure
+        if: ${{ failure() && steps.publish.outcome == 'failure' }}
         uses: actions/upload-artifact@v4
         with:
-          name: global-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          name: global-metadata-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             global_metadata/data/global_metadata.db
             global_metadata/data/global_metadata.db.sha256
           if-no-files-found: error
           retention-days: 7
-
-      - name: Publish updated database
-        shell: bash
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Upload attempt $attempt/5..."
-
-            if gh release upload global-db \
-              global_metadata/data/global_metadata.db \
-              global_metadata/data/global_metadata.db.sha256 \
-              --clobber
-            then
-              echo "Global database published successfully."
-              exit 0
-            fi
-
-            if [[ "$attempt" -lt 5 ]]; then
-              wait_seconds=$((attempt * 20))
-              echo "Upload failed. Retrying in ${wait_seconds}s..."
-              sleep "$wait_seconds"
-            fi
-          done
-
-          echo "Upload failed after 5 attempts."
-          echo "The updated database is preserved as a GitHub Actions artifact."
-          exit 1
