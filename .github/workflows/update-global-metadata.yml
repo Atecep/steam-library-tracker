@@ -93,6 +93,38 @@ jobs:
           cd global_metadata/data
           sha256sum global_metadata.db > global_metadata.db.sha256
 
+      - name: Save recovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            global_metadata/data/global_metadata.db
+            global_metadata/data/global_metadata.db.sha256
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Publish updated database
+        shell: bash
         run: |
-          gh release upload global-db             global_metadata/data/global_metadata.db             global_metadata/data/global_metadata.db.sha256             --clobber
+          for attempt in 1 2 3 4 5; do
+            echo "Upload attempt $attempt/5..."
+
+            if gh release upload global-db \
+              global_metadata/data/global_metadata.db \
+              global_metadata/data/global_metadata.db.sha256 \
+              --clobber
+            then
+              echo "Global database published successfully."
+              exit 0
+            fi
+
+            if [[ "$attempt" -lt 5 ]]; then
+              wait_seconds=$((attempt * 20))
+              echo "Upload failed. Retrying in ${wait_seconds}s..."
+              sleep "$wait_seconds"
+            fi
+          done
+
+          echo "Upload failed after 5 attempts."
+          echo "The updated database is preserved as a GitHub Actions artifact."
+          exit 1
