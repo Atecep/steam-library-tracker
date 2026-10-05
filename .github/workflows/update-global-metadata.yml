@@ -47,6 +47,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r global_metadata/requirements.txt
+          python -m pip install zstandard
 
       - name: Prepare database directory
         run: mkdir -p global_metadata/data
@@ -101,12 +102,49 @@ jobs:
           print("SQLite integrity check: ok")
           PY
 
-      - name: Create checksum and temporary assets
+      - name: Create checksums and compressed assets
         run: |
+          python - <<'PY'
+          from pathlib import Path
+          import zstandard as zstd
+
+          data_dir = Path("global_metadata/data")
+          source = data_dir / "global_metadata.db"
+          compressed = data_dir / "global_metadata.db.zst"
+
+          compressor = zstd.ZstdCompressor(
+              level=10,
+              threads=-1,
+          )
+
+          with source.open("rb") as src, compressed.open("wb") as dst:
+              compressor.copy_stream(src, dst)
+
+          raw_size = source.stat().st_size
+          compressed_size = compressed.stat().st_size
+
+          ratio = (
+              compressed_size / raw_size * 100.0
+              if raw_size
+              else 0.0
+          )
+
+          print(
+              f"Compressed "
+              f"{raw_size / 1024 / 1024:.1f} MiB "
+              f"-> "
+              f"{compressed_size / 1024 / 1024:.1f} MiB "
+              f"({ratio:.1f}% of raw size)"
+          )
+          PY
+
           cd global_metadata/data
 
           sha256sum global_metadata.db > global_metadata.db.sha256
+          sha256sum global_metadata.db.zst > global_metadata.db.zst.sha256
+
           sha256sum -c global_metadata.db.sha256
+          sha256sum -c global_metadata.db.zst.sha256
 
           cp global_metadata.db global_metadata.db.next
           cp global_metadata.db.sha256 global_metadata.db.sha256.next
@@ -387,13 +425,323 @@ jobs:
 
           echo "Safe publication complete."
 
+      - name: Publish compressed database safely
+        id: publish_zst
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          RELEASE_TAG="global-db"
+          API_RELEASE="repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          API_ASSETS="repos/${GITHUB_REPOSITORY}/releases/assets"
+          DATA_DIR="global_metadata/data"
+
+          ZST_NAME="global_metadata.db.zst"
+          SHA_NAME="global_metadata.db.zst.sha256"
+
+          NEXT_ZST_NAME="${ZST_NAME}.next"
+          NEXT_SHA_NAME="${SHA_NAME}.next"
+
+          PREV_ZST_NAME="${ZST_NAME}.prev"
+          PREV_SHA_NAME="${SHA_NAME}.prev"
+
+          cp \
+            "${DATA_DIR}/${ZST_NAME}" \
+            "${DATA_DIR}/${NEXT_ZST_NAME}"
+
+          cp \
+            "${DATA_DIR}/${SHA_NAME}" \
+            "${DATA_DIR}/${NEXT_SHA_NAME}"
+
+          asset_id() {
+            local name="$1"
+
+            gh api "$API_RELEASE" \
+              --jq ".assets[] | select(.name == \"${name}\") | .id" \
+              | head -n 1
+          }
+
+          retry_command() {
+            local description="$1"
+            shift
+
+            local attempt
+
+            for attempt in 1 2 3 4 5; do
+              echo "${description} - attempt ${attempt}/5"
+
+              if "$@"; then
+                return 0
+              fi
+
+              if [[ "$attempt" -lt 5 ]]; then
+                local wait_seconds=$((attempt * 20))
+                echo "Failed. Retrying in ${wait_seconds}s..."
+                sleep "$wait_seconds"
+              fi
+            done
+
+            echo "::error::${description} failed after 5 attempts."
+            return 1
+          }
+
+          delete_asset_id() {
+            local id="$1"
+            local description="$2"
+
+            if [[ -z "$id" ]]; then
+              return 0
+            fi
+
+            retry_command "$description" \
+              gh api --method DELETE "${API_ASSETS}/${id}"
+          }
+
+          delete_asset_name() {
+            local name="$1"
+            local id
+
+            id="$(asset_id "$name" || true)"
+
+            if [[ -n "$id" ]]; then
+              delete_asset_id \
+                "$id" \
+                "Delete stale asset ${name}"
+            fi
+          }
+
+          rename_asset() {
+            local id="$1"
+            local new_name="$2"
+
+            retry_command \
+              "Rename asset to ${new_name}" \
+              gh api \
+                --method PATCH \
+                "${API_ASSETS}/${id}" \
+                -f "name=${new_name}"
+          }
+
+          upload_asset() {
+            local path="$1"
+            local name
+
+            name="$(basename "$path")"
+
+            local attempt
+
+            for attempt in 1 2 3 4 5; do
+              echo "Upload ${name} - attempt ${attempt}/5"
+
+              if gh release upload "$RELEASE_TAG" "$path"; then
+                return 0
+              fi
+
+              local stale_id
+              stale_id="$(asset_id "$name" || true)"
+
+              if [[ -n "$stale_id" ]]; then
+                delete_asset_id \
+                  "$stale_id" \
+                  "Remove incomplete temporary asset ${name}" \
+                  || true
+              fi
+
+              if [[ "$attempt" -lt 5 ]]; then
+                local wait_seconds=$((attempt * 20))
+                echo "Upload failed. Retrying in ${wait_seconds}s..."
+                sleep "$wait_seconds"
+              fi
+            done
+
+            echo "::error::Upload ${name} failed after 5 attempts."
+            return 1
+          }
+
+          verify_asset() {
+            local id="$1"
+            local local_path="$2"
+            local description="$3"
+
+            local state
+            local remote_size
+            local remote_digest
+            local local_size
+            local local_digest
+
+            state="$(
+              gh api "${API_ASSETS}/${id}" \
+                --jq '.state'
+            )"
+
+            remote_size="$(
+              gh api "${API_ASSETS}/${id}" \
+                --jq '.size'
+            )"
+
+            remote_digest="$(
+              gh api "${API_ASSETS}/${id}" \
+                --jq '.digest // ""'
+            )"
+
+            local_size="$(stat -c%s "$local_path")"
+
+            local_digest="sha256:$(
+              sha256sum "$local_path" |
+              awk '{print $1}'
+            )"
+
+            if [[ "$state" != "uploaded" ]]; then
+              echo "::error::${description} is not uploaded."
+              return 1
+            fi
+
+            if [[ "$remote_size" != "$local_size" ]]; then
+              echo "::error::${description} size mismatch."
+              return 1
+            fi
+
+            if [[ \
+              -z "$remote_digest" \
+              || "$remote_digest" != "$local_digest" \
+            ]]; then
+              echo "::error::${description} digest mismatch."
+              return 1
+            fi
+
+            echo "${description} verified."
+          }
+
+          CURRENT_ZST_ID="$(asset_id "$ZST_NAME" || true)"
+          CURRENT_SHA_ID="$(asset_id "$SHA_NAME" || true)"
+
+          if [[ \
+            -n "$CURRENT_ZST_ID" \
+            && -z "$CURRENT_SHA_ID" \
+          ]] || [[ \
+            -z "$CURRENT_ZST_ID" \
+            && -n "$CURRENT_SHA_ID" \
+          ]]; then
+            echo "::error::Existing compressed asset pair is incomplete."
+            exit 1
+          fi
+
+          delete_asset_name "$NEXT_ZST_NAME"
+          delete_asset_name "$NEXT_SHA_NAME"
+          delete_asset_name "$PREV_ZST_NAME"
+          delete_asset_name "$PREV_SHA_NAME"
+
+          upload_asset "${DATA_DIR}/${NEXT_ZST_NAME}"
+          upload_asset "${DATA_DIR}/${NEXT_SHA_NAME}"
+
+          NEXT_ZST_ID="$(asset_id "$NEXT_ZST_NAME" || true)"
+          NEXT_SHA_ID="$(asset_id "$NEXT_SHA_NAME" || true)"
+
+          if [[ \
+            -z "$NEXT_ZST_ID" \
+            || -z "$NEXT_SHA_ID" \
+          ]]; then
+            echo "::error::Compressed temporary assets are missing."
+            exit 1
+          fi
+
+          verify_asset \
+            "$NEXT_ZST_ID" \
+            "${DATA_DIR}/${NEXT_ZST_NAME}" \
+            "Compressed database"
+
+          verify_asset \
+            "$NEXT_SHA_ID" \
+            "${DATA_DIR}/${NEXT_SHA_NAME}" \
+            "Compressed checksum"
+
+          rollback() {
+            echo "::warning::Rolling back compressed assets..."
+
+            delete_asset_id \
+              "$NEXT_ZST_ID" \
+              "Remove new compressed database" \
+              || true
+
+            delete_asset_id \
+              "$NEXT_SHA_ID" \
+              "Remove new compressed checksum" \
+              || true
+
+            if [[ -n "$CURRENT_ZST_ID" ]]; then
+              rename_asset \
+                "$CURRENT_ZST_ID" \
+                "$ZST_NAME" \
+                || true
+            fi
+
+            if [[ -n "$CURRENT_SHA_ID" ]]; then
+              rename_asset \
+                "$CURRENT_SHA_ID" \
+                "$SHA_NAME" \
+                || true
+            fi
+          }
+
+          if [[ -n "$CURRENT_SHA_ID" ]]; then
+            if ! rename_asset \
+              "$CURRENT_SHA_ID" \
+              "$PREV_SHA_NAME"; then
+              rollback
+              exit 1
+            fi
+          fi
+
+          if [[ -n "$CURRENT_ZST_ID" ]]; then
+            if ! rename_asset \
+              "$CURRENT_ZST_ID" \
+              "$PREV_ZST_NAME"; then
+              rollback
+              exit 1
+            fi
+          fi
+
+          if ! rename_asset \
+            "$NEXT_ZST_ID" \
+            "$ZST_NAME"; then
+            rollback
+            exit 1
+          fi
+
+          if ! rename_asset \
+            "$NEXT_SHA_ID" \
+            "$SHA_NAME"; then
+            rollback
+            exit 1
+          fi
+
+          echo "Compressed database promoted successfully."
+
+          if [[ -n "$CURRENT_ZST_ID" ]]; then
+            delete_asset_id \
+              "$CURRENT_ZST_ID" \
+              "Delete previous compressed database" \
+              || true
+          fi
+
+          if [[ -n "$CURRENT_SHA_ID" ]]; then
+            delete_asset_id \
+              "$CURRENT_SHA_ID" \
+              "Delete previous compressed checksum" \
+              || true
+          fi
+
+          echo "Compressed publication complete."
+
       - name: Save recovery artifact after publication failure
-        if: ${{ failure() && steps.publish.outcome == 'failure' }}
+        if: ${{ failure() && (steps.publish.outcome == 'failure' || steps.publish_zst.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: global-metadata-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             global_metadata/data/global_metadata.db
             global_metadata/data/global_metadata.db.sha256
+            global_metadata/data/global_metadata.db.zst
+            global_metadata/data/global_metadata.db.zst.sha256
           if-no-files-found: error
           retention-days: 7
