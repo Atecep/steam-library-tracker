@@ -4,8 +4,6 @@ A lightweight desktop app for organising, tracking and exploring your Steam libr
 
 Steam Library Tracker runs locally on your computer and uses the Steam Web API to load your games and playtime. Personal statuses, notes and cached metadata are stored locally.
 
-![Library](docs/screenshots/library.png)
-
 ## Features
 
 - Import your Steam library and playtime
