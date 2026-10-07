@@ -9,6 +9,10 @@ from database import (
     get_all_game_data,
     init_database,
 )
+from global_bootstrap import (
+    bootstrap_global_metadata,
+    should_attempt_global_bootstrap,
+)
 from settings import load_settings
 from metadata_background import (
     start_metadata_background_refresh,
@@ -421,6 +425,29 @@ df = pd.DataFrame(data)
 # The worker uses only SQLite/network calls, never Streamlit UI calls, so
 # normal interaction and Smart Pick remain responsive.
 library_records = df.to_dict("records")
+
+# Seed missing local metadata from the compressed global catalogue before
+# starting the normal background workers. Failure is non-fatal.
+if should_attempt_global_bootstrap():
+    with st.spinner(
+        "Preparing library metadata..."
+    ):
+        bootstrap_result = bootstrap_global_metadata(
+            library_records
+        )
+
+    if bootstrap_result["completed"]:
+        st.toast(
+            "✅ Global metadata imported: "
+            f"{bootstrap_result['steam_imported']} Steam · "
+            f"{bootstrap_result['hltb_imported']} HLTB"
+        )
+
+    elif bootstrap_result["attempted"]:
+        st.toast(
+            "⚠️ Global metadata bootstrap was unavailable. "
+            "Local metadata refresh will continue normally."
+        )
 
 start_metadata_background_refresh(
     library_records

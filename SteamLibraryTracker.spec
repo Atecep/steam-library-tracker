@@ -18,6 +18,7 @@ project_hiddenimports = [
     "app_paths",
     "constants",
     "database",
+    "global_bootstrap",
     "hltb_service",
     "hltb_background",
     "metadata_service",

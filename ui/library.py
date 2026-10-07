@@ -228,6 +228,7 @@ def _render_gallery_pagination(
             key=f"gallery_previous_page_{position}"
         ):
             st.session_state.gallery_page -= 1
+            st.session_state.library_scroll_to_top = True
             st.rerun()
 
     with page_col:
@@ -246,6 +247,7 @@ def _render_gallery_pagination(
             key=f"gallery_next_page_{position}"
         ):
             st.session_state.gallery_page += 1
+            st.session_state.library_scroll_to_top = True
             st.rerun()
 
 

@@ -81,6 +81,14 @@ def init_database():
             )
         """)
 
+        # Persistent application-level state.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS app_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
         # Add newer HLTB matcher fields to databases created by older app versions.
         hltb_columns = {
             row[1]
@@ -668,3 +676,254 @@ def save_hltb_metadata(
                 main_extra, completionist, all_styles, web_link, fetched_at,
             ),
         )
+
+
+def get_app_state(key, default=None):
+    """Return one persistent application state value."""
+
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT value
+            FROM app_state
+            WHERE key = ?
+            """,
+            (str(key),),
+        ).fetchone()
+
+    if row is None:
+        return default
+
+    return row[0]
+
+
+def set_app_state(key, value):
+    """Persist one application state value."""
+
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO app_state (key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET value = excluded.value
+            """,
+            (str(key), str(value)),
+        )
+
+
+def import_global_metadata(global_db_path, library_records):
+    """Import missing Steam/HLTB metadata for the current user library.
+
+    Existing local metadata is never overwritten. Manual HLTB overrides
+    therefore always remain authoritative.
+    """
+
+    appids = sorted(
+        {
+            int(game["AppID"])
+            for game in library_records
+            if game.get("AppID") is not None
+        }
+    )
+
+    if not appids:
+        return {
+            "steam_imported": 0,
+            "hltb_imported": 0,
+        }
+
+    imported_at = datetime.now().isoformat(
+        timespec="seconds"
+    )
+
+    with get_connection() as conn:
+        conn.execute(
+            "ATTACH DATABASE ? AS global_metadata_db",
+            (str(global_db_path),),
+        )
+
+        try:
+            # Validate the columns this app version depends on.
+            conn.execute(
+                """
+                SELECT
+                    appid,
+                    state,
+                    genres,
+                    categories,
+                    developers,
+                    publishers,
+                    review_score,
+                    review_description,
+                    positive_percentage,
+                    total_reviews
+                FROM global_metadata_db.steam_metadata
+                LIMIT 0
+                """
+            )
+
+            conn.execute(
+                """
+                SELECT
+                    appid,
+                    searched_name,
+                    state,
+                    hltb_id,
+                    matched_name,
+                    similarity,
+                    match_confidence,
+                    matcher_version,
+                    main_story,
+                    main_extra,
+                    completionist,
+                    all_styles,
+                    web_link
+                FROM global_metadata_db.hltb_metadata
+                LIMIT 0
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TEMP TABLE bootstrap_library_appids (
+                    appid INTEGER PRIMARY KEY
+                )
+                """
+            )
+
+            conn.executemany(
+                """
+                INSERT INTO bootstrap_library_appids(appid)
+                VALUES (?)
+                """,
+                ((appid,) for appid in appids),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO game_metadata (
+                    appid,
+                    genres,
+                    categories,
+                    developers,
+                    publishers,
+                    review_score,
+                    review_description,
+                    positive_percentage,
+                    total_reviews,
+                    fetched_at
+                )
+                SELECT
+                    s.appid,
+                    s.genres,
+                    s.categories,
+                    s.developers,
+                    s.publishers,
+                    s.review_score,
+                    s.review_description,
+                    s.positive_percentage,
+                    s.total_reviews,
+                    ?
+                FROM global_metadata_db.steam_metadata AS s
+                INNER JOIN bootstrap_library_appids AS l
+                    ON l.appid = s.appid
+                LEFT JOIN game_metadata AS local
+                    ON local.appid = s.appid
+                WHERE
+                    s.state = 'ready'
+                    AND local.appid IS NULL
+                """,
+                (imported_at,),
+            )
+
+            steam_imported = int(
+                conn.execute(
+                    "SELECT changes()"
+                ).fetchone()[0]
+            )
+
+            # A centrally resolved Steam row supersedes any old local
+            # unavailable/retry marker for the same AppID.
+            conn.execute(
+                """
+                DELETE FROM metadata_fetch_status
+                WHERE appid IN (
+                    SELECT s.appid
+                    FROM global_metadata_db.steam_metadata AS s
+                    INNER JOIN bootstrap_library_appids AS l
+                        ON l.appid = s.appid
+                    WHERE s.state = 'ready'
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                INSERT INTO hltb_metadata (
+                    appid,
+                    searched_name,
+                    state,
+                    hltb_id,
+                    matched_name,
+                    similarity,
+                    match_confidence,
+                    matcher_version,
+                    main_story,
+                    main_extra,
+                    completionist,
+                    all_styles,
+                    web_link,
+                    fetched_at
+                )
+                SELECT
+                    h.appid,
+                    h.searched_name,
+                    h.state,
+                    h.hltb_id,
+                    h.matched_name,
+                    h.similarity,
+                    h.match_confidence,
+                    h.matcher_version,
+                    h.main_story,
+                    h.main_extra,
+                    h.completionist,
+                    h.all_styles,
+                    h.web_link,
+                    ?
+                FROM global_metadata_db.hltb_metadata AS h
+                INNER JOIN bootstrap_library_appids AS l
+                    ON l.appid = h.appid
+                LEFT JOIN hltb_metadata AS local
+                    ON local.appid = h.appid
+                WHERE
+                    h.state IN ('matched', 'no_match')
+                    AND local.appid IS NULL
+                """,
+                (imported_at,),
+            )
+
+            hltb_imported = int(
+                conn.execute(
+                    "SELECT changes()"
+                ).fetchone()[0]
+            )
+
+            conn.execute(
+                "DROP TABLE bootstrap_library_appids"
+            )
+            conn.commit()
+
+        finally:
+            try:
+                conn.execute(
+                    "DETACH DATABASE global_metadata_db"
+                )
+            except Exception:
+                pass
+
+    return {
+        "steam_imported": steam_imported,
+        "hltb_imported": hltb_imported,
+    }
+

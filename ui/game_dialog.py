@@ -120,6 +120,31 @@ def show_game_details(game, df):
             margin: 0.1rem 0 0.1rem 0;
         }
 
+        [data-testid="stDialog"] [class*="st-key-hltb_edit_button_"] {
+            margin-top: 0.05rem;
+            width: fit-content;
+        }
+
+        [data-testid="stDialog"] [class*="st-key-hltb_edit_button_"] button {
+            min-height: 0 !important;
+            height: auto !important;
+            padding: 0 !important;
+            border: 0 !important;
+            background: transparent !important;
+            box-shadow: none !important;
+            opacity: 0.68;
+        }
+
+        [data-testid="stDialog"] [class*="st-key-hltb_edit_button_"] button p {
+            font-size: 0.76rem !important;
+            line-height: 1.15 !important;
+            font-weight: 400 !important;
+        }
+
+        [data-testid="stDialog"] [class*="st-key-hltb_edit_button_"] button:hover {
+            opacity: 1;
+        }
+
         [data-testid="stDialog"] .technical-caption {
             font-size: 0.69rem;
             opacity: 0.48;
@@ -331,10 +356,16 @@ def show_game_details(game, df):
             '<div class="section-gap"></div>',
             unsafe_allow_html=True,
         )
+
         st.markdown(
             '<div class="compact-section-title">⏳ HowLongToBeat</div>',
             unsafe_allow_html=True,
         )
+
+        edit_state_key = f"hltb_edit_open_{appid}"
+
+        if edit_state_key not in st.session_state:
+            st.session_state[edit_state_key] = False
 
         hltb_col1, hltb_col2, hltb_col3 = st.columns(3)
 
@@ -367,6 +398,88 @@ def show_game_details(game, df):
                     else "—"
                 ),
             )
+
+        if st.button(
+            "Edit",
+            type="tertiary",
+            key=f"hltb_edit_button_{appid}",
+        ):
+            st.session_state[edit_state_key] = not st.session_state[
+                edit_state_key
+            ]
+
+        if st.session_state[edit_state_key]:
+            if hltb.get("matched_name"):
+                st.caption(
+                    f"Current HLTB match: {hltb['matched_name']}"
+                )
+
+            with st.form(
+                f"hltb_edit_match_{appid}",
+                border=False,
+            ):
+                manual_id_col, save_col, cancel_col = st.columns(
+                    [3, 1, 1],
+                    vertical_alignment="bottom",
+                )
+
+                with manual_id_col:
+                    manual_hltb_id = st.text_input(
+                        "HLTB ID",
+                        value=(
+                            str(hltb.get("hltb_id"))
+                            if hltb.get("hltb_id") is not None
+                            else ""
+                        ),
+                        key=f"hltb_edit_id_{appid}",
+                    )
+
+                with save_col:
+                    save_manual_hltb_id = st.form_submit_button(
+                        "Save",
+                        use_container_width=True,
+                    )
+
+                with cancel_col:
+                    cancel_hltb_edit = st.form_submit_button(
+                        "Cancel",
+                        use_container_width=True,
+                    )
+
+                if cancel_hltb_edit:
+                    st.session_state[edit_state_key] = False
+                    st.rerun()
+
+                if save_manual_hltb_id:
+                    try:
+                        manual_hltb_id = manual_hltb_id.strip()
+
+                        if not manual_hltb_id:
+                            raise ValueError("Enter an HLTB ID.")
+
+                        set_manual_hltb_metadata(
+                            appid=appid,
+                            game_name=game_name,
+                            hltb_id=manual_hltb_id,
+                        )
+
+                    except ValueError as error:
+                        st.error(str(error))
+
+                    except RuntimeError:
+                        st.error(
+                            "Could not load that HLTB ID. "
+                            "Check the ID and try again."
+                        )
+
+                    except Exception:
+                        st.error(
+                            "HowLongToBeat could not be reached at the moment."
+                        )
+
+                    else:
+                        st.session_state[edit_state_key] = False
+                        st.rerun()
 
     elif hltb is not None and hltb.get("state") == "no_match":
         st.caption(
