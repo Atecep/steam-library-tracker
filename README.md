@@ -4,6 +4,8 @@ A lightweight desktop app for organising, tracking and exploring your Steam libr
 
 Steam Library Tracker runs locally on your computer and uses the Steam Web API to load your games and playtime. Personal statuses, notes and cached metadata are stored locally.
 
+![Library](docs/screenshots/library.png)
+
 ## Features
 
 - Import your Steam library and playtime
@@ -84,7 +86,7 @@ You will need:
 - a Steam Web API key
 - your SteamID64
 
-After your library is loaded, Steam Store and HowLongToBeat metadata are cached locally and can continue to update in the background.
+After your library is loaded, Steam Library Tracker uses its global metadata catalogue to populate available Steam Store and HowLongToBeat metadata for your games. Any missing or outdated metadata can then continue to update in the background.
 
 ## Smart Pick
 
@@ -94,6 +96,8 @@ Filters can include status, genre, game mode, Steam review score and HowLongToBe
 
 You can reroll a suggestion while keeping the same filters.
 
+![Smart Picker](docs/screenshots/smart-picker.png)
+
 ## HowLongToBeat
 
 Steam Library Tracker can match games in your Steam library with HowLongToBeat and cache available completion-time estimates locally.
@@ -101,6 +105,8 @@ Steam Library Tracker can match games in your Steam library with HowLongToBeat a
 Automatic matching is intentionally conservative to reduce incorrect matches. If no reliable match is found, you can enter the game's HowLongToBeat ID manually from the game details window.
 
 HowLongToBeat data is used for display, library sorting and optional Smart Pick duration filters.
+
+![Game details](docs/screenshots/game-details.png)
 
 ## Local data
 
@@ -145,7 +151,7 @@ Steam Library Tracker is a local desktop application.
 
 Personal notes, statuses, configuration and cached library data remain on your computer unless you explicitly export or share them.
 
-Steam and HowLongToBeat requests are used only to retrieve the metadata required by the app.
+Network requests are used only to retrieve the Steam library, application metadata, HowLongToBeat data and update information required by the app.
 
 ## Development
 
