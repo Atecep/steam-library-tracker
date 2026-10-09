@@ -23,6 +23,7 @@ Steam Library Tracker runs locally on your computer and uses the Steam Web API t
   - Completionist
 - Manually assign a HowLongToBeat ID when an automatic match is unavailable
 - Sort your library by HowLongToBeat duration
+- Analyse **ProtonDB** ratings and community launch options on demand (Linux only)
 - Use **Smart Pick** when you do not know what to play
   - Filter by status
   - Filter by genre and game mode
@@ -108,6 +109,16 @@ HowLongToBeat data is used for display, library sorting and optional Smart Pick 
 
 ![Game details](docs/screenshots/game-details.png)
 
+## ProtonDB
+
+ProtonDB analysis is available exclusively on Linux and runs entirely on demand. Click **Analyse ProtonDB** in the game details window to open a separate dialog with the ProtonDB rating and community launch options.
+
+Launch options from successful community reports are ranked by frequency, with more weight given to recent reports. Where possible, the analysis considers AMD and NVIDIA hardware differences to filter out options intended for a different GPU.
+
+Commands are displayed for reference only. Steam Library Tracker never applies or executes them automatically.
+
+Click **← Back** to return to the game's details.
+
 ## Local data
 
 Steam Library Tracker stores user data outside the application folder so updates do not overwrite your settings, statuses or notes.
@@ -151,7 +162,7 @@ Steam Library Tracker is a local desktop application.
 
 Personal notes, statuses, configuration and cached library data remain on your computer unless you explicitly export or share them.
 
-Network requests are used only to retrieve the Steam library, application metadata, HowLongToBeat data and update information required by the app.
+Network requests are used only to retrieve the Steam library, application metadata, HowLongToBeat data, ProtonDB reports and update information required by the app.
 
 ## Development
 
