@@ -23,6 +23,7 @@ project_hiddenimports = [
     "hltb_background",
     "metadata_service",
     "metadata_background",
+    "protondb_service",
     "settings",
     "smart_pick",
     "steam_api",

@@ -1,4 +1,5 @@
 import math
+import platform
 
 import streamlit as st
 
@@ -12,6 +13,7 @@ from database import (
 )
 from metadata_service import get_game_metadata
 from hltb_service import get_hltb_metadata, set_manual_hltb_metadata
+from protondb_service import analyse_protondb, protondb_url
 from smart_pick import smart_pick
 from ui.common import (
     clear_selected_game,
@@ -29,6 +31,276 @@ def _compact_metric(label, value):
         """,
         unsafe_allow_html=True,
     )
+
+
+
+def _proton_tier_label(value):
+    if not value:
+        return "Unknown"
+    return str(value).replace("_", " ").title()
+
+
+def _proton_tier_badge(value):
+    tier = str(value or "unknown").strip().lower()
+
+    styles = {
+        "platinum": {
+            "bg": "rgba(59, 130, 246, 0.18)",
+            "border": "rgba(96, 165, 250, 0.45)",
+            "text": "#93c5fd",
+            "label": "Platinum",
+        },
+        "gold": {
+            "bg": "rgba(234, 179, 8, 0.18)",
+            "border": "rgba(250, 204, 21, 0.45)",
+            "text": "#fde047",
+            "label": "Gold",
+        },
+        "silver": {
+            "bg": "rgba(148, 163, 184, 0.18)",
+            "border": "rgba(203, 213, 225, 0.40)",
+            "text": "#e2e8f0",
+            "label": "Silver",
+        },
+        "bronze": {
+            "bg": "rgba(180, 83, 9, 0.18)",
+            "border": "rgba(217, 119, 6, 0.45)",
+            "text": "#fdba74",
+            "label": "Bronze",
+        },
+        "borked": {
+            "bg": "rgba(220, 38, 38, 0.18)",
+            "border": "rgba(248, 113, 113, 0.45)",
+            "text": "#fca5a5",
+            "label": "Borked",
+        },
+        "pending": {
+            "bg": "rgba(107, 114, 128, 0.18)",
+            "border": "rgba(156, 163, 175, 0.40)",
+            "text": "#d1d5db",
+            "label": "Pending",
+        },
+        "unknown": {
+            "bg": "rgba(107, 114, 128, 0.18)",
+            "border": "rgba(156, 163, 175, 0.40)",
+            "text": "#d1d5db",
+            "label": "Unknown",
+        },
+    }
+
+    style = styles.get(tier, styles["unknown"])
+
+    return f"""
+    <div style="
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.42rem 0.85rem;
+        border-radius: 999px;
+        border: 1px solid {style['border']};
+        background: {style['bg']};
+        color: {style['text']};
+        font-weight: 700;
+        font-size: 1rem;
+        line-height: 1;
+        margin: 0.1rem 0 0.35rem 0;
+    ">
+        <span>🐧</span>
+        <span>{style['label']}</span>
+    </div>
+    """
+
+
+def _format_age_days(days):
+    if days is None or days >= 99999:
+        return "unknown age"
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "1 day ago"
+    if days < 60:
+        return f"{days} days ago"
+    if days < 730:
+        months = max(1, round(days / 30.4))
+        return f"{months} months ago"
+    years = days / 365.25
+    return f"{years:.1f} years ago"
+
+
+def _open_protondb_dialog():
+    appid = st.session_state.get("selected_game_appid")
+    if appid is not None:
+        st.session_state["protondb_game_draft"] = {
+            "appid": int(appid),
+            "fields": {
+                key: st.session_state[key]
+                for key in (f"detail_notes_{appid}", f"detail_status_{appid}")
+                if key in st.session_state
+            },
+        }
+    st.session_state["open_protondb_dialog"] = True
+
+
+def _close_protondb_dialog():
+    st.session_state["open_protondb_dialog"] = False
+
+
+def _dismiss_protondb_dialog():
+    _close_protondb_dialog()
+    st.session_state.pop("protondb_game_draft", None)
+    clear_selected_game()
+
+
+def _invalidate_protondb_analysis(appid):
+    cache = st.session_state.setdefault(
+        "protondb_analysis_cache",
+        {},
+    )
+    cache.pop(int(appid), None)
+
+
+def _render_ranked_protondb_option(item, rank):
+    st.markdown(f"**{rank}.**")
+    st.code(item.get("command", ""), language=None)
+
+    evidence = [
+        f"{int(item.get('recent_count') or 0)} recent",
+        f"{int(item.get('count') or 0)} total",
+        f"latest {_format_age_days(item.get('latest_age_days'))}",
+    ]
+    st.caption(" · ".join(evidence))
+
+
+def _render_protondb_analysis(analysis):
+    summary = analysis.get("summary")
+
+    if summary is None:
+        st.caption(
+            "No ProtonDB community reports were found for this Steam AppID."
+        )
+        return
+
+    effective_tier = summary.get("effective_tier")
+    st.markdown(
+        _proton_tier_badge(effective_tier),
+        unsafe_allow_html=True,
+    )
+
+    detail_error = analysis.get("detail_error")
+    reports_analysed = int(analysis.get("reports_analysed") or 0)
+
+    if detail_error:
+        st.warning(
+            "Partial analysis: some community reports could not be loaded."
+            if analysis.get("reports_partial")
+            else "Detailed community reports could not be analysed."
+        )
+        if not analysis.get("reports_partial"):
+            return
+
+    if reports_analysed <= 0:
+        st.caption("No detailed reports were available for analysis.")
+        return
+
+    ranked_options = analysis.get("ranked_options") or []
+
+    st.markdown("**Top community launch options**")
+
+    if not ranked_options:
+        st.caption(
+            "No launch options were found in the analysed successful reports."
+        )
+    else:
+        primary = ranked_options[:3]
+        extra = ranked_options[3:]
+
+        for index, item in enumerate(primary, start=1):
+            _render_ranked_protondb_option(item, index)
+
+        if extra:
+            with st.expander(f"Show {len(extra)} more"):
+                for index, item in enumerate(extra, start=4):
+                    _render_ranked_protondb_option(item, index)
+
+
+def _render_protondb_methodology(analysis):
+    summary = analysis.get("summary") or {}
+    confidence = _proton_tier_label(summary.get("confidence"))
+    report_total = analysis.get("report_total") or summary.get("total") or 0
+    reports_analysed = int(analysis.get("reports_analysed") or 0)
+
+    st.markdown(f"**ProtonDB confidence:** {confidence}")
+    st.markdown(f"**Total ProtonDB reports:** {int(report_total):,}")
+    st.markdown(
+        f"SLT analysed **{reports_analysed} community reports** from ProtonDB."
+    )
+    st.caption(
+        "Newer successful reports receive more weight in the ranking."
+    )
+    st.caption(
+        "GPU-specific options for a different detected vendor are omitted."
+    )
+    st.caption(
+        "Community launch options are untrusted user reports. "
+        "SLT only displays them; it never applies or executes them."
+    )
+
+
+@st.dialog(
+    "ProtonDB analysis",
+    width="medium",
+    on_dismiss=_dismiss_protondb_dialog,
+)
+def show_protondb_analysis_dialog(appid, game_name):
+    st.subheader(game_name)
+
+    if st.button(
+        "← Back",
+        key=f"protondb_back_{appid}",
+    ):
+        _close_protondb_dialog()
+        st.rerun()
+
+    cache = st.session_state.setdefault(
+        "protondb_analysis_cache",
+        {},
+    )
+    analysis = cache.get(int(appid))
+
+    if analysis is None:
+        try:
+            with st.spinner("Analysing ProtonDB reports..."):
+                analysis = analyse_protondb(appid)
+        except Exception:
+            st.error("ProtonDB could not be reached at the moment.")
+        else:
+            cache[int(appid)] = analysis
+
+    if analysis is not None:
+        _render_protondb_analysis(analysis)
+
+        st.divider()
+
+        with st.expander("How this ranking works"):
+            _render_protondb_methodology(analysis)
+
+    refresh_col, protondb_col = st.columns(2)
+
+    with refresh_col:
+        st.button(
+            "Refresh",
+            key=f"protondb_refresh_{appid}",
+            on_click=_invalidate_protondb_analysis,
+            args=(appid,),
+            width="stretch",
+        )
+
+    with protondb_col:
+        st.link_button(
+            "Open ProtonDB",
+            protondb_url(appid),
+            width="stretch",
+        )
 
 
 def _slt_review_score(positive_percentage, total_reviews):
@@ -543,11 +815,22 @@ def show_game_details(game, df):
             "⚠️ HowLongToBeat data could not be loaded at the moment."
         )
 
-    if hltb_matched:
-        st.markdown(
-            '<div class="section-gap"></div>',
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        '<div class="section-gap"></div>',
+        unsafe_allow_html=True,
+    )
+
+    if platform.system() == "Linux" and st.button(
+        "🐧 Analyse ProtonDB",
+        width="stretch",
+        key=f"protondb_open_{appid}",
+        help=(
+            "Open an on-demand ProtonDB analysis for this game. "
+            "Nothing is fetched until you click."
+        ),
+    ):
+        _open_protondb_dialog()
+        st.rerun()
 
     if metadata_unavailable:
 
@@ -648,7 +931,9 @@ def show_game_details(game, df):
         "Status",
         STATUSES,
         index=(
-            STATUSES.index(current_status)
+            None
+            if f"detail_status_{appid}" in st.session_state
+            else STATUSES.index(current_status)
             if current_status in STATUSES
             else 0
         ),
@@ -657,7 +942,7 @@ def show_game_details(game, df):
 
     notes = st.text_area(
         "Notes",
-        value=current_notes,
+        value=None if f"detail_notes_{appid}" in st.session_state else current_notes,
         height=100,
         key=f"detail_notes_{appid}",
         placeholder=(
@@ -886,6 +1171,8 @@ def show_selected_game_dialog(df):
             False
         )
     ):
+        st.session_state["open_protondb_dialog"] = False
+        st.session_state.pop("protondb_game_draft", None)
         return
 
     selected_rows = df[
@@ -893,6 +1180,8 @@ def show_selected_game_dialog(df):
     ]
 
     if selected_rows.empty:
+        st.session_state["open_protondb_dialog"] = False
+        st.session_state.pop("protondb_game_draft", None)
         clear_selected_game()
         return
 
@@ -901,6 +1190,22 @@ def show_selected_game_dialog(df):
         .iloc[0]
         .to_dict()
     )
+
+    if st.session_state.get(
+        "open_protondb_dialog",
+        False,
+    ):
+        show_protondb_analysis_dialog(
+            int(selected_appid),
+            selected_game_data["Game"],
+        )
+        return
+
+    draft = st.session_state.pop("protondb_game_draft", None)
+    if draft and draft["appid"] == int(selected_appid):
+        # Widget state is removed while the details dialog is not rendered.
+        # Restore the snapshot before creating its widgets; Save remains explicit.
+        st.session_state.update(draft["fields"])
 
     show_game_details(
         selected_game_data,

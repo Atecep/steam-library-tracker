@@ -1286,7 +1286,6 @@ def render_library(df):
                     f"Open {game['Game']}",
                     key=f"open_game_{appid}",
                     width="stretch",
-                    help=str(game["Game"]),
                     on_click=open_game_dialog,
                     args=(appid,)
                 )
